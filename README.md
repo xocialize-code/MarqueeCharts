@@ -48,6 +48,7 @@ Every type supports:
 |---|---|
 | `MarqueeCharts` | The pieces of a chart, Foundation only:<ul><li>the spec (`ChartSpec`, Codable as JSON) and the theme (`ChartTheme`);</li><li>number formats (`NumberFormat`) and the value axis' scale;</li><li>the layout (`ChartLayout.draw` → `ChartDrawing`);</li><li>builds (`ChartBuild`: steps, timing, and each part's state at a moment).</li></ul> |
 | `ChartDataTable` (in `MarqueeCharts`) | A chart's data as a table: reading what a spreadsheet copies (tab-separated from Excel and Numbers, or CSV), numbers as people write them in the chart's language (`1.234,5`, `12%`, `$3.00`, `(200)`), and turning the table into categories and series. `ChartSpec.pasting(_:)` applies a pasted table. |
+| `ChartDocument` (in `MarqueeCharts`) | A chart as a file (`.marqueechart`, `application/vnd.marquee.chart+json`): its spec, the theme it was drawn in and the size it was laid out at, as JSON with sorted keys (the same chart is the same bytes). Readers ignore fields they don't know and refuse a newer version. |
 | `MarqueeChartsGraphics` | `ChartRenderer`: draws a `ChartDrawing` into a `CGContext` or an image, with each part in its build state (shown, faded or wiped), using CoreGraphics and CoreText. |
 | `ChartLab` | A Mac app for trying charts. Pick a type, edit its data (or paste it from a spreadsheet: Edit › Paste Data, ⇧⌘V) and options, and play or scrub its build. Export a frame, the build's frames, each part alone, or the spec. |
 

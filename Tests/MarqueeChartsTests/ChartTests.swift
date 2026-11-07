@@ -271,3 +271,28 @@ func pixels(_ img: CGImage) -> (Int, Int) -> (UInt8, UInt8, UInt8, UInt8) {
         #expect(back == c)
     }
 }
+
+@Suite struct ChartDocumentTests {
+    @Test func roundTripAndStableBytes() throws {
+        var theme = ChartTheme.dark
+        theme.fontFamily = "Inter"
+        let doc = ChartDocument(chart: .sample(.doughnut), theme: theme, width: 480, height: 360)
+        let a = try doc.json(), b = try doc.json()
+        #expect(a == b)
+        #expect(try ChartDocument.read(a) == doc)
+        let text = String(decoding: a, as: UTF8.self)
+        #expect(text.hasPrefix(#"{"chart":"#))
+        #expect(text.contains(#""format":"marquee-chart""#))
+        #expect(doc.drawing().width == 480)
+    }
+
+    @Test func readersAreTolerantAndStrict() throws {
+        let minimal = #"{"format":"marquee-chart","chart":{"kind":"line","series":[{"name":"A","values":[1,2]}]},"later":true}"#
+        let d = try ChartDocument.read(Data(minimal.utf8))
+        #expect(d.version == 1 && d.theme == .standard && d.width == 960)
+        #expect(throws: ChartDocument.ReadError.notAChart) { try ChartDocument.read(Data(#"{"format":"x","chart":{}}"#.utf8)) }
+        #expect(throws: ChartDocument.ReadError.newerVersion(2)) {
+            try ChartDocument.read(Data(#"{"format":"marquee-chart","version":2,"chart":{}}"#.utf8))
+        }
+    }
+}

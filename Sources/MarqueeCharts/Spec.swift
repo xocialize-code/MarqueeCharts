@@ -468,6 +468,17 @@ public struct ChartTheme: Hashable, Sendable, Codable {
         self.separator = separator
     }
 
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = ChartTheme.standard
+        self.init(
+            accents: try c.decodeIfPresent([ChartColor].self, forKey: .accents) ?? d.accents,
+            text: try c.decodeIfPresent(ChartColor.self, forKey: .text) ?? d.text,
+            fontFamily: try c.decodeIfPresent(String.self, forKey: .fontFamily),
+            separator: try c.decodeIfPresent(ChartColor.self, forKey: .separator) ?? .white
+        )
+    }
+
     /// Office's default palette (2013 and later) and its chart text grey.
     public static let standard = ChartTheme(
         accents: ["4472C4", "ED7D31", "A5A5A5", "FFC000", "5B9BD5", "70AD47"].compactMap { ChartColor(hex: $0) },
