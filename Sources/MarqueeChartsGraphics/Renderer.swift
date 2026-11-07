@@ -245,8 +245,7 @@ public enum ChartRenderer {
         let lines = t.string.split(separator: "\n", omittingEmptySubsequences: false).map { s in
             CTLineCreateWithAttributedString(CFAttributedStringCreate(nil, String(s) as CFString, attrs as CFDictionary))
         }
-        let ascent = CTFontGetAscent(font)
-        let lineHeight = ascent + CTFontGetDescent(font) + CTFontGetLeading(font)
+        let (lineHeight, ascent) = lineMetrics(font, t.size)
         let blockH = lineHeight * CGFloat(lines.count)
         let top: CGFloat = switch t.anchor {
         case .top: t.box.y0
@@ -285,6 +284,14 @@ public enum ChartRenderer {
         return out
     }
 
+    /// A line's height and where its baseline sits below its top, as PowerPoint spaces text: single lines 1.2 times the
+    /// size apart in every font, split at the baseline in the font's own ascent-to-descent proportion.
+    static func lineMetrics(_ font: CTFont, _ size: Double) -> (CGFloat, CGFloat) {
+        let a = CTFontGetAscent(font), d = CTFontGetDescent(font)
+        let h = CGFloat(size) * 1.2
+        return (h, a + d > 0 ? h * a / (a + d) : h * 0.8)
+    }
+
     static func text(_ t: ChartText, _ ctx: CGContext, _ fonts: FontCache) {
         guard t.size.isFinite, t.size > 0 else { return }
         if fonts.outlines {
@@ -298,8 +305,7 @@ public enum ChartRenderer {
         let lines = t.string.split(separator: "\n", omittingEmptySubsequences: false).map { s in
             CTLineCreateWithAttributedString(CFAttributedStringCreate(nil, String(s) as CFString, attrs as CFDictionary))
         }
-        let ascent = CTFontGetAscent(font)
-        let lineHeight = ascent + CTFontGetDescent(font) + CTFontGetLeading(font)
+        let (lineHeight, ascent) = lineMetrics(font, t.size)
         let blockH = lineHeight * CGFloat(lines.count)
         let top: CGFloat = switch t.anchor {
         case .top: t.box.y0
