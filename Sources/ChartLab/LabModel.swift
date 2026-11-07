@@ -114,6 +114,8 @@ final class LabModel {
         s.kind = k
         // A pie shows one series.
         if k.isPie && s.series.count > 1 { s.varyColors = true }
+        // A combo starts as PowerPoint's does: columns, the last series a line.
+        if k == .combo && !s.series.contains(where: { $0.kind != nil }), let last = s.series.indices.last { s.series[last].kind = .line }
         // Scatter and bubble points need x values (and bubbles sizes): the sample's, where a series has none.
         if k.isXY {
             let sample = ChartSpec.sample(k).series

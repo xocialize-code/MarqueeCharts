@@ -229,13 +229,18 @@ struct Layout {
             legendItems = c.categories.enumerated().map { ($1, .color(seriesColor($0)), nil) }
         } else {
             legendItems = c.series.enumerated().map { i, s in
-                let k = c.kind
+                let k = c.seriesKind(s)
                 if !k.isBarLike && !k.isArea { return (s.name, .color(seriesLine(i, s)), nil) }
                 if k.isBarLike {
                     let paint: BarPaint = c.varyColors && c.series.count == 1 && s.fill == nil ? .color(seriesColor(i)) : paintOf(s.fill, seriesColor(i))
                     return (s.name, paint, barOutline(s))
                 }
                 return (s.name, .color(seriesFill(i, s)), nil)
+            } + c.series.flatMap { s in
+                // The trendlines' entries, after the series', as PowerPoint lists them: each a dashed line in its ink.
+                s.trendlines.prefix(8).enumerated().map { ti, t in
+                    (t.legendName(series: s.name), BarPaint.line(Self.trendInk.at(ti % Self.trendInk.count) ?? .rgb(0x22, 0x22, 0x22), [6, 3.5]), nil)
+                }
             }
         }
         if let pos = c.legend, !legendItems.isEmpty {
@@ -330,9 +335,24 @@ struct Layout {
 
     // MARK: Columns, bars, lines and areas
 
+    /// An error bar to draw over everything else: its part, its position across the value axis, its two ends along
+    /// it, its cap's half length, and whether it has caps.
+    struct ErrorMark {
+        var part: ChartPart
+        var mid: Double
+        var from: Double
+        var to: Double
+        var cap: Double
+        var endCap: Bool
+    }
+
     mutating func drawAxes(_ area0: ChartRect, _ base: Double, _ textCol: ChartColor, _ gridCol: ChartColor) {
         var area = area0
-        let horiz = c.kind.horizontal
+        let combo = c.kind == .combo
+        // Bars are drawn first and lines over them; a combo chart has both.
+        let spec = c
+        let barKind = spec.series.map { spec.seriesKind($0) }.first { $0.isBarLike }
+        let horiz = combo ? (barKind?.horizontal ?? false) : c.kind.horizontal
         // Axis titles: the left one turned to read upwards, the bottom one centred under the axis. On a horizontal bar
         // chart the category axis is the left one.
         let (leftTitle, bottomTitle) = horiz ? (c.categoryAxisTitle, c.valueAxisTitle) : (c.valueAxisTitle, c.categoryAxisTitle)
@@ -351,20 +371,43 @@ struct Layout {
         // As many major units as the value axis has room for labels (PowerPoint's automatic unit).
         let axisLen = horiz ? area.width - base * 4.5 : area.height - base * 1.8
         let maxIntervals = Int(rustCast: (axisLen / (horiz ? base * 6 : base * 1.9)).rounded(.down).clamped(2, 12))
-        let (min, max, step) = c.axisScale(maxIntervals)
-        let ticks = Self.axisTicks((min, max, step))
+        // A logarithmic axis is scaled in exponents of its base.
+        let logBase = c.valueAxis.logBase ?? 10
+        let log = c.logAxisScale(maxIntervals)
+        let (min, max, step) = log ?? c.axisScale(maxIntervals)
+        let toE = { (v: Double) -> Double in
+            guard log != nil else { return v }
+            return (Foundation.log(v.rustMax(Double.leastNormalMagnitude)) / Foundation.log(logBase)).rustMax(min - 1)
+        }
+        // A combo chart's secondary value axis, on the right (vertical value axes only).
+        let second = horiz ? nil : c.axisScale(secondary: true, maxIntervals)
         // Label gutters as wide as the longest value label.
-        let labelW = Double(ticks.map { c.axisLabel($0).unicodeScalars.count }.max() ?? 1) * base * 0.55 + base * 0.6
-        let gutter = horiz ? base * 4.5 : c.valueAxis.hidden ? base * 0.5 : Self.clampSoft(labelW, base * 1.5, area.width * 0.3)
+        let primaryTicks = Self.axisTicks((min, max, step)).map { k in log != nil ? pow(logBase, k) : k }
+        func labelW(_ ticks: [Double], _ secondary: Bool) -> Double {
+            Double(ticks.map { c.axisLabel($0, secondary: secondary).unicodeScalars.count }.max() ?? 1) * base * 0.55 + base * 0.6
+        }
+        // A data table under the plot takes the category labels' place, its series names left of the plot.
+        let table = horiz ? nil : c.dataTable.flatMap { t in c.takesDataTable ? DataTableLayout(c, t, base) : nil }
+        let gutter0 = horiz ? base * 4.5 : c.valueAxis.hidden ? base * 0.5 : Self.clampSoft(labelW(primaryTicks, false), base * 1.5, area.width * 0.3)
+        let gutter = table.map { gutter0.rustMax($0.nameWidth.rustMin(area.width * 0.4)) } ?? gutter0
+        let gutterR = second.flatMap { c.secondaryAxis.hidden ? nil : $0 }
+            .map { Self.clampSoft(labelW(Self.axisTicks(($0.min, $0.max, $0.step)), true), base * 1.5, area.width * 0.3) } ?? 0
         let plot = horiz
             ? ChartRect(area.x0 + gutter, area.y0, area.x1, area.y1 - base * 1.6)
-            : ChartRect(area.x0 + gutter, area.y0, area.x1, area.y1 - base * 1.8)
+            : ChartRect(area.x0 + gutter, area.y0, area.x1 - gutterR, area.y1 - (table.map { $0.height.rustMin(area.height * 0.6) } ?? base * 1.8))
         if let f = c.plotFill { fillWith(paintOf(f, .white), plot) }
         let span = Self.positiveSpan(max - min)
         // Values past the axis limits stop at the plot's edge.
         let toV = { (v: Double) -> Double in
-            let v = v.rustMax(min).rustMin(max)
+            let v = toE(v).rustMax(min).rustMin(max)
             return horiz ? plot.x0 + (v - min) / span * plot.width : plot.y1 - (v - min) / span * plot.height
+        }
+        // A series' value as a position on its own axis.
+        let toAxis = { (sec: Bool, v: Double) -> Double in
+            if sec, let s2 = second {
+                return plot.y1 - (v.rustMax(s2.min).rustMin(s2.max) - s2.min) / Self.positiveSpan(s2.max - s2.min) * plot.height
+            }
+            return toV(v)
         }
         // Minor gridlines, under the major ones: five to a major unit.
         if c.minorGridlines {
@@ -372,7 +415,9 @@ struct Layout {
             let n = minor > 0 ? Swift.min(Swift.max(Int64(rustCast: ((max - min) / minor).rounded()), 1), 500) : 1
             var g = ChartPath()
             for k in 0 ... n where k % 5 != 0 {
-                let pos = toV(min + Double(k) * minor)
+                // On a logarithmic axis `min`, `max` and `step` are exponents of the base.
+                let e = min + Double(k) * minor
+                let pos = toV(log != nil ? pow(logBase, e) : e)
                 if horiz {
                     g.move(to: ChartPoint(pos, plot.y0))
                     g.line(to: ChartPoint(pos, plot.y1))
@@ -384,7 +429,7 @@ struct Layout {
             stroke(g, ChartStroke(.rgb(0xF2, 0xF2, 0xF2), width: 0.75))
         }
         // Gridlines and value labels.
-        for v in ticks {
+        for v in primaryTicks {
             let pos = toV(v)
             let text = c.valueAxis.hidden ? "" : c.axisLabel(v)
             var g = ChartPath()
@@ -399,12 +444,22 @@ struct Layout {
             }
             if c.gridlines { stroke(g, ChartStroke(gridCol, width: 0.75)) }
         }
+        // The secondary axis' labels, on the right, without gridlines of their own.
+        if let s2 = second, !c.secondaryAxis.hidden {
+            for v in Self.axisTicks((s2.min, s2.max, s2.step)) {
+                let pos = toAxis(true, v)
+                label(c.axisLabel(v, secondary: true), ChartRect(plot.x1 + base * 0.4, pos - base, area.x1, pos + base), base, .left, .middle, textCol, false)
+            }
+        }
         let ncat = Swift.max(c.pointCount, 1)
-        let band = horiz ? plot.height / Double(ncat) : plot.width / Double(ncat)
+        // A trendline's forecast reserves empty category slots, so the line can run past the data.
+        let (back, fwd) = forecastPad()
+        let nspan = Double(ncat) + back + fwd
+        let band = horiz ? plot.height / nspan : plot.width / nspan
         // Where category `i`'s band starts along its axis: left to right, or bottom to top on a horizontal bar chart,
-        // unless the axis is reversed.
+        // unless the axis is reversed. The forecast's empty slots stay on their own side of the data.
         let backwards = horiz != c.categoriesReversed
-        let slot = { (i: Int) -> Double in backwards ? Double(Swift.max(ncat - (i + 1), 0)) : Double(i) }
+        let slot = { (i: Int) -> Double in backwards ? Double(Swift.max(ncat - (i + 1), 0)) + fwd : Double(i) + back }
         // Scatter and bubble charts have a value x axis: one scale over every series' x values, its tick labels in place
         // of the category names.
         let bubbles = BubbleScale(c, plot)
@@ -416,22 +471,43 @@ struct Layout {
                 label(ChartSpec.xAxisLabel(v), ChartRect(pos - 30, plot.y1 + 3, pos + 30, plot.y1 + base * 1.6), base, .center, .top, textCol, false)
             }
         }
-        // Category labels: on two lines when they don't fit their band.
-        let wraps = !horiz && c.categories.contains { Double($0.unicodeScalars.count) * base * 0.5 > band }
-        for (i, name) in c.categories.enumerated() where xscale == nil {
-            let mid = horiz ? plot.y0 + band * (slot(i) + 0.5) : plot.x0 + band * (slot(i) + 0.5)
-            if horiz {
-                label(name, ChartRect(area.x0, mid - base, plot.x0 - base * 0.4, mid + base), base, .right, .middle, textCol, false)
-            } else {
-                let text = wraps ? Self.splitLabel(name) : name
-                label(text, ChartRect(mid - band / 2, plot.y1 + 3, mid + band / 2, plot.y1 + base * (wraps ? 2.8 : 1.6)), base, .center, .top, textCol, false)
+        if let t = table {
+            t.draw(&self, plot, band, slot, ncat, gutter, textCol)
+        } else if xscale == nil {
+            // Category labels: on two lines when they don't fit their band.
+            let wraps = !horiz && c.categories.contains { Double($0.unicodeScalars.count) * base * 0.5 > band }
+            for (i, name) in c.categories.enumerated() {
+                let mid = horiz ? plot.y0 + band * (slot(i) + 0.5) : plot.x0 + band * (slot(i) + 0.5)
+                if horiz {
+                    label(name, ChartRect(area.x0, mid - base, plot.x0 - base * 0.4, mid + base), base, .right, .middle, textCol, false)
+                } else {
+                    let text = wraps ? Self.splitLabel(name) : name
+                    label(text, ChartRect(mid - band / 2, plot.y1 + 3, mid + band / 2, plot.y1 + base * (wraps ? 2.8 : 1.6)), base, .center, .top, textCol, false)
+                }
             }
         }
-        let zero = toV(Self.clampSoft(0, min, max))
-        if c.kind.isBarLike {
-            drawBars(plot, band, slot, ncat, horiz, toV, base, textCol)
-        } else {
-            drawLines(plot, band, slot, ncat, toV, zero, base, textCol, toX, bubbles)
+        let zero = log != nil ? toV(pow(logBase, min)) : toV(Self.clampSoft(0, min, max))
+        var errors: [ErrorMark] = []
+        drawBars(plot, band, slot, ncat, horiz, toV, toAxis, base, textCol, &errors)
+        drawUpDownBars(plot, band, slot, ncat, toAxis)
+        drawLines(plot, band, slot, ncat, toAxis, zero, base, textCol, toX, bubbles, &errors)
+        // A category position (0-based, fractional) as a slot, the way `slot` places the bars.
+        let slotAt = { (x: Double) -> Double in backwards ? Double(ncat) - 1 - x + fwd : x + back }
+        drawTrendlines(plot, band, slotAt, xscale.map { ($0.min, $0.max) }, ncat, horiz, base, textCol, toAxis)
+        // Error bars, over everything: a horizontal bar chart's run across, its value axis being horizontal.
+        for e in errors {
+            part = e.part
+            func pt(_ along: Double, _ across: Double) -> ChartPoint { horiz ? ChartPoint(along, across) : ChartPoint(across, along) }
+            var p = ChartPath()
+            p.move(to: pt(e.from, e.mid))
+            p.line(to: pt(e.to, e.mid))
+            if e.endCap {
+                for end in [e.from, e.to] {
+                    p.move(to: pt(end, e.mid - e.cap))
+                    p.line(to: pt(end, e.mid + e.cap))
+                }
+            }
+            stroke(p, ChartStroke(textCol, width: 0.75))
         }
         // The axis line.
         part = .background
@@ -447,29 +523,34 @@ struct Layout {
     }
 
     mutating func drawBars(
-        _ plot: ChartRect, _ band: Double, _ slot: (Int) -> Double, _ ncat: Int, _ horiz: Bool, _ toV: (Double) -> Double, _ base: Double,
-        _ textCol: ChartColor
+        _ plot: ChartRect, _ band: Double, _ slot: (Int) -> Double, _ ncat: Int, _ horiz: Bool, _ toV: (Double) -> Double,
+        _ toAxis: (Bool, Double) -> Double, _ base: Double, _ textCol: ChartColor, _ errors: inout [ErrorMark]
     ) {
-        let ns = Swift.max(c.series.count, 1)
+        let bars = c.series.enumerated().filter { c.seriesKind($0.element).isBarLike }
+        guard let bk = bars.first.map({ c.seriesKind($0.element) }) else { return }
+        let ns = Swift.max(bars.count, 1)
         // Gap width and overlap are fractions of one bar's width: a category's band holds its bars (overlapping by
         // `overlap` of a bar between neighbours) plus one gap.
         let gap = c.gapWidth.clamped(0, 5)
-        let stacked = c.kind.stacked
+        let stacked = bk.stacked
         let ov = stacked ? 1 : c.overlap.clamped(-1, 1)
         let n = Double(ns)
         let bar = band / (n - (n - 1) * ov + gap)
         let step = bar * (1 - ov)
         let group = bar + step * (n - 1)
+        // Error bars need each series' mean and spread: worked out once, not per point.
+        let stats = bars.map { $0.element.errorBars == nil ? SeriesStats() : SeriesStats.of($0.element.values) }
         for i in 0 ..< ncat {
             var posAcc = 0.0
             var negAcc = 0.0
-            let total = c.kind.percent
-                ? c.series.reduce(0.0) { $0 + Swift.abs(($1.values.at(i) ?? nil) ?? 0) }.rustMax(1e-9)
+            let total = bk.percent
+                ? bars.reduce(0.0) { $0 + Swift.abs(($1.element.values.at(i) ?? nil) ?? 0) }.rustMax(1e-9)
                 : 1.0
-            for (si, s) in c.series.enumerated() {
+            for (bi, (si, s)) in bars.enumerated() {
                 part = .point(series: si, category: i)
+                let sec = c.onSecondary(s)
                 let v = ((s.values.at(i) ?? nil) ?? 0) / total
-                let start = band * slot(i) + (band - group) / 2 + (stacked ? 0 : step * Double(si))
+                let start = band * slot(i) + (band - group) / 2 + (stacked ? 0 : step * Double(bi))
                 let (a, b): (Double, Double)
                 if stacked {
                     if v >= 0 {
@@ -484,13 +565,17 @@ struct Layout {
                 }
                 let r = (horiz
                     ? ChartRect(toV(a), plot.y0 + start, toV(b), plot.y0 + start + bar)
-                    : ChartRect(plot.x0 + start, toV(b), plot.x0 + start + bar, toV(a))).abs
+                    : ChartRect(plot.x0 + start, toAxis(sec, b), plot.x0 + start + bar, toAxis(sec, a))).abs
                 // A bar grows from the end nearer its stack's base (zero, or the bar under it).
                 let baseValue = stacked ? (v >= 0 ? a : b) : 0
-                role = .bar(horizontal: horiz, base: toV(baseValue))
+                role = .bar(horizontal: horiz, base: horiz ? toV(baseValue) : toAxis(sec, baseValue))
                 fillWith(barPaint(si, i, s), r)
                 if let (oc, ow) = barOutline(s), ow > 0 { stroke(.rect(r), ChartStroke(oc, width: ow)) }
                 role = .none
+                if let e = s.errorBars, let st = stats.at(bi), let (lo, hi) = e.range(st, i, v >= 0 ? b : a) {
+                    let (p0, p1) = horiz ? (toV(lo), toV(hi)) : (toAxis(sec, lo), toAxis(sec, hi))
+                    errors.append(ErrorMark(part: part, mid: horiz ? r.center.y : r.center.x, from: p0, to: p1, cap: bar.rustMin(base * 0.8) * 0.5, endCap: e.endCap))
+                }
                 if c.showsDataLabels(s), let v = s.values.at(i) ?? nil {
                     barLabel(s, si, i, c.labelText(s, i, v), r, horiz, v < 0, base, textCol)
                 }
@@ -498,21 +583,51 @@ struct Layout {
         }
     }
 
+    /// A line chart's up/down bars, behind its lines: from the first series to the last in each category, hollow where
+    /// it rose. Each comes with its category's last series.
+    mutating func drawUpDownBars(_ plot: ChartRect, _ band: Double, _ slot: (Int) -> Double, _ ncat: Int, _ toAxis: (Bool, Double) -> Double) {
+        guard c.upDownBars, [.line, .lineMarkers, .stackedLine, .percentLine].contains(c.kind), !c.threeD, c.series.count >= 2 else { return }
+        let ink = ChartColor.rgb(0x40, 0x40, 0x40)
+        for i in 0 ..< ncat {
+            let vals = c.series.map { ($0.values.at(i) ?? nil) ?? 0 }
+            guard let o0 = c.series.first.flatMap({ $0.values.at(i) ?? nil }), let l0 = c.series.last.flatMap({ $0.values.at(i) ?? nil }) else { continue }
+            let total = vals.reduce(0.0) { $0 + Swift.abs($1) }.rustMax(1e-9)
+            let sum = vals.reduce(0.0, +)
+            let (o, cl): (Double, Double) = switch c.kind {
+            case .stackedLine: (o0, sum)
+            case .percentLine: (o0 / total, sum / total)
+            default: (o0, l0)
+            }
+            part = .point(series: c.series.count - 1, category: i)
+            let x = plot.x0 + band * (slot(i) + 0.5)
+            let w = band * 0.4
+            let (y0, y1) = (toAxis(false, o.rustMax(cl)), toAxis(false, o.rustMin(cl)))
+            let r = ChartRect(x - w / 2, y0.rustMin(y1), x + w / 2, y1.rustMax(y0 + 1))
+            fill(.rect(r), cl >= o ? .white : ink)
+            stroke(.rect(r), ChartStroke(ink, width: 1))
+        }
+        part = .background
+    }
+
     mutating func drawLines(
-        _ plot: ChartRect, _ band: Double, _ slot: (Int) -> Double, _ ncat: Int, _ toV: (Double) -> Double, _ zero: Double, _ base: Double,
-        _ textCol: ChartColor, _ toX: (Double) -> Double?, _ bubbles: BubbleScale
+        _ plot: ChartRect, _ band: Double, _ slot: (Int) -> Double, _ ncat: Int, _ toAxis: (Bool, Double) -> Double, _ zero: Double, _ base: Double,
+        _ textCol: ChartColor, _ toX: (Double) -> Double?, _ bubbles: BubbleScale, _ errors: inout [ErrorMark]
     ) {
-        let kind = c.kind
-        let xy = kind.isXY
         var acc = [Double](repeating: 0, count: ncat)
-        // A 100 % line or area plots each value as its share of the category's total.
-        let totals: [Double] = kind.percent
-            ? (0 ..< ncat).map { i in c.series.reduce(0.0) { $0 + Swift.abs(($1.values.at(i) ?? nil) ?? 0) }.rustMax(1e-9) }
-            : []
-        let markers = kind == .lineMarkers
+        // A 100 % line or area plots each value as its share of the category's total over those series.
+        let shares = c.series.filter { s in let k = c.seriesKind(s); return k.percent && !k.isBarLike }
+        let totals: [Double] = shares.isEmpty ? [] : (0 ..< ncat).map { i in
+            shares.reduce(0.0) { $0 + Swift.abs(($1.values.at(i) ?? nil) ?? 0) }.rustMax(1e-9)
+        }
         for (si, s) in c.series.enumerated() {
+            let kind = c.seriesKind(s)
+            if kind.isBarLike { continue }
+            let xy = kind.isXY
+            let sec = c.onSecondary(s)
+            let markers = kind == .lineMarkers
             let areaKind = kind.isArea
             let col = areaKind ? seriesFill(si, s) : seriesLine(si, s)
+            let stats = s.errorBars.map { _ in SeriesStats.of(s.values) }
             var pts: [ChartPoint] = []
             // The category of each point: the part it belongs to.
             var cats: [Int] = []
@@ -540,9 +655,12 @@ struct Layout {
                         continue
                     }
                 }
-                pts.append(ChartPoint(x, toV(v)))
+                if let e = s.errorBars, let st = stats, let (lo, hi) = e.range(st, i, v) {
+                    errors.append(ErrorMark(part: .point(series: si, category: i), mid: x, from: toAxis(sec, lo), to: toAxis(sec, hi), cap: base * 0.4, endCap: e.endCap))
+                }
+                pts.append(ChartPoint(x, toAxis(sec, v)))
                 cats.append(i)
-                floors.append(toV(floor))
+                floors.append(toAxis(sec, floor))
             }
             guard let first = pts.first, let fc = cats.first else { continue }
             if areaKind {
@@ -563,8 +681,8 @@ struct Layout {
                 }
                 fill(a, col, kind.stacked ? 1 : 0.85)
             } else if !xy || (kind == .scatter && s.line?.color != nil) {
-                // A line's segment comes with the point it runs to (a scatter series' only when it has a line). Joined with round caps, the segments draw as the
-                // whole line does with round joins.
+                // A line's segment comes with the point it runs to (a scatter series' only when it has a line). Joined
+                // with round caps, the segments draw as the whole line does with round joins.
                 let lw = (s.line?.width.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 2.25).clamped(0.25, 20)
                 let smooth = s.smooth && pts.count > 2
                 for j in pts.indices.dropFirst() {
@@ -610,6 +728,182 @@ struct Layout {
                 }
             }
         }
+        part = .background
+    }
+
+    // MARK: Trendlines
+
+    static func padUnits(_ v: Double?) -> Double { v.flatMap { $0.isFinite && $0 > 0 ? $0.rustMin(3) : nil } ?? 0 }
+
+    /// Empty category slots reserved for a trendline forecast (backward, forward), capped so the data still fills the
+    /// plot.
+    func forecastPad() -> (Double, Double) {
+        if c.kind.isXY { return (0, 0) }
+        var back = 0.0
+        var fwd = 0.0
+        for s in c.series where !c.seriesKind(s).isXY {
+            for t in s.trendlines.prefix(8) where t.kind != .movingAvg {
+                back = back.rustMax(Self.padUnits(t.backward))
+                fwd = fwd.rustMax(Self.padUnits(t.forward))
+            }
+        }
+        return (back, fwd)
+    }
+
+    /// A trendline's ink, by its place among its series' trendlines.
+    static let trendInk: [ChartColor] = [.rgb(0x22, 0x22, 0x22), .rgb(0xB0, 0x30, 0x30), .rgb(0x1A, 0x5C, 0x7A), .rgb(0xA0, 0x68, 0x00)]
+
+    static func mapXY(
+        _ plot: ChartRect, _ band: Double, _ slot: (Double) -> Double, _ horiz: Bool, _ scatter: Bool, _ sx0: Double, _ sx1: Double,
+        _ sec: Bool, _ x: Double, _ y: Double, _ toAxis: (Bool, Double) -> Double
+    ) -> ChartPoint? {
+        if !x.isFinite || !y.isFinite { return nil }
+        let value = toAxis(sec, y)
+        if !value.isFinite { return nil }
+        let along: Double
+        if scatter && sx1 > sx0 {
+            along = plot.x0 + (x - sx0) / (sx1 - sx0) * plot.width
+        } else {
+            along = (horiz ? plot.y0 : plot.x0) + band * (slot(x - 1) + 0.5)
+        }
+        if !along.isFinite { return nil }
+        return horiz && !scatter ? ChartPoint(value, along) : ChartPoint(along, value)
+    }
+
+    /// The part of segment `a`–`b` that lies inside `r`.
+    static func clipSegment(_ a: ChartPoint, _ b: ChartPoint, _ r: ChartRect) -> (ChartPoint, ChartPoint)? {
+        var (t0, t1) = (0.0, 1.0)
+        let dx = b.x - a.x
+        let dy = b.y - a.y
+        let p = [-dx, dx, -dy, dy]
+        let q = [a.x - r.x0, r.x1 - a.x, a.y - r.y0, r.y1 - a.y]
+        for i in 0 ..< 4 {
+            let (pi, qi) = (p[i], q[i])
+            if Swift.abs(pi) < 1e-12 {
+                if qi < 0 { return nil }
+            } else {
+                let t = qi / pi
+                if pi < 0 {
+                    if t > t1 { return nil } else if t > t0 { t0 = t }
+                } else if t < t0 {
+                    return nil
+                } else if t < t1 {
+                    t1 = t
+                }
+            }
+        }
+        return (ChartPoint(a.x + t0 * dx, a.y + t0 * dy), ChartPoint(a.x + t1 * dx, a.y + t1 * dy))
+    }
+
+    /// A corner of `plot` whose box stays clear of `pts` (the drawn trendline).
+    static func captionAt(_ plot: ChartRect, _ boxW: Double, _ boxH: Double, _ pts: [ChartPoint], _ n: Int) -> (Double, Double) {
+        let pad = 4.0
+        let shift = Double(n) * (boxH + 2)
+        let xRight = (plot.x1 - boxW - pad).rustMax(plot.x0 + pad)
+        let yBottom = (plot.y1 - boxH - pad - shift).rustMax(plot.y0 + pad)
+        let yTop = (plot.y0 + pad + shift).rustMin(yBottom)
+        let corners = [(plot.x0 + pad, yTop), (xRight, yTop), (plot.x0 + pad, yBottom), (xRight, yBottom)]
+        var best = corners[0]
+        var bestD = -1.0
+        for (x, y) in corners {
+            var minD = Double.greatestFiniteMagnitude
+            for p in pts {
+                let dx = p.x < x ? x - p.x : p.x > x + boxW ? p.x - (x + boxW) : 0
+                let dy = p.y < y ? y - p.y : p.y > y + boxH ? p.y - (y + boxH) : 0
+                minD = minD.rustMin((dx * dx + dy * dy).squareRoot())
+            }
+            if pts.isEmpty { minD = 1 }
+            if minD > bestD {
+                bestD = minD
+                best = (x, y)
+            }
+        }
+        return best
+    }
+
+    /// Each series' trendlines, dashed, with their equation and R² in a box in the corner that stays clearest of them.
+    /// A trendline comes with its series' last point.
+    mutating func drawTrendlines(
+        _ plot: ChartRect, _ band: Double, _ slot: (Double) -> Double, _ xscale: (Double, Double)?, _ ncat: Int, _ horiz: Bool, _ base: Double,
+        _ textCol: ChartColor, _ toAxis: (Bool, Double) -> Double
+    ) {
+        var labelN = 0
+        for (si, s) in c.series.enumerated() where !s.trendlines.isEmpty {
+            let scatter = c.seriesKind(s).isXY
+            let sec = c.onSecondary(s)
+            var xs: [Double] = []
+            var ys: [Double] = []
+            for i in 0 ..< ncat {
+                guard let y = s.values.at(i) ?? nil, y.isFinite else { continue }
+                let x: Double
+                if scatter {
+                    guard let xv = s.xValues.at(i) ?? nil, xv.isFinite else { continue }
+                    x = xv
+                } else {
+                    x = Double(i + 1)
+                }
+                xs.append(x)
+                ys.append(y)
+            }
+            // The same x extent the scatter marks use, so the fit sits on the points: the chart's value x axis where it
+            // has one, else the series' own x values.
+            var (sx0, sx1) = (0.0, 0.0)
+            if scatter, let (lo, hi) = xscale {
+                (sx0, sx1) = (lo, hi)
+            } else if scatter {
+                var lo = Double.greatestFiniteMagnitude
+                var hi = -Double.greatestFiniteMagnitude
+                for v in s.xValues.compactMap({ $0 }) where v.isFinite {
+                    lo = lo.rustMin(v)
+                    hi = hi.rustMax(v)
+                }
+                (sx0, sx1) = (lo, hi)
+            }
+            part = .point(series: si, category: ncat - 1)
+            for (ti, t) in s.trendlines.prefix(8).enumerated() {
+                guard let fit = t.fit(xs, ys) else { continue }
+                let (x0, x1) = fit.span(t.forward, t.backward)
+                let samples = fit.samples(x0, x1)
+                var path = ChartPath()
+                var prev: ChartPoint?
+                var inkPts: [ChartPoint] = []
+                var any = false
+                for k in samples.indices.dropLast() {
+                    let (w0, w1) = (samples[k], samples[k + 1])
+                    guard let a = Self.mapXY(plot, band, slot, horiz, scatter, sx0, sx1, sec, w0.x, w0.y, toAxis),
+                          let b = Self.mapXY(plot, band, slot, horiz, scatter, sx0, sx1, sec, w1.x, w1.y, toAxis),
+                          let (ca, cb) = Self.clipSegment(a, b, plot)
+                    else {
+                        prev = nil
+                        continue
+                    }
+                    let cont = prev.map { Swift.abs($0.x - ca.x) < 0.6 && Swift.abs($0.y - ca.y) < 0.6 } ?? false
+                    if !cont { path.move(to: ca) }
+                    path.line(to: cb)
+                    prev = cb
+                    if inkPts.count < 64 {
+                        inkPts.append(ca)
+                        inkPts.append(cb)
+                    }
+                    any = true
+                }
+                if !any { continue }
+                let ink = Self.trendInk.at(ti % Self.trendInk.count) ?? .rgb(0x22, 0x22, 0x22)
+                stroke(path, ChartStroke(ink, width: 1.6, dashes: [6, 3.5], cap: .round))
+                let caption = t.caption(fit)
+                if caption.isEmpty { continue }
+                let lines = caption.unicodeScalars.filter { $0 == "\n" }.count + 1
+                let boxH = base * 1.3 * Double(lines) + 2
+                let widest = Double(rustLines(caption).map(\.unicodeScalars.count).max() ?? 1)
+                let boxW = Self.clampSoft(widest * base * 0.62, 48, plot.width * 0.72)
+                let (x, y) = Self.captionAt(plot, boxW, boxH, inkPts, labelN)
+                let box = ChartRect(x, y, x + boxW, y + boxH)
+                fill(.rect(box), .white)
+                label(caption, box, (base * 0.9).clamped(8, 13), .left, .top, textCol, false)
+                labelN += 1
+            }
+        }
+        part = .background
     }
 
     // MARK: Data labels
@@ -674,7 +968,7 @@ struct Layout {
     ) {
         let size = base * 0.9
         let o = c.labelOptions(s)
-        var pos = o.position(for: c.kind, threeD: c.threeD) ?? (o.callout ? .outsideEnd : nil)
+        var pos = o.position(for: c.seriesKind(s), threeD: c.threeD) ?? (o.callout ? .outsideEnd : nil)
         if pos == .outsideEnd && !negative && !o.callout { pos = nil }
         let (tw, th) = Self.labelExtent(text, size)
         let lift = o.callout ? size * 0.9 : 0
@@ -718,7 +1012,7 @@ struct Layout {
         let (tw, th) = Self.labelExtent(text, size)
         let g = gapR + size * 0.3 + (o.callout ? size * 0.6 : 0)
         let w = tw + size * 2
-        switch o.position(for: c.kind, threeD: c.threeD) ?? (o.callout ? .above : .right) {
+        switch o.position(for: c.seriesKind(s), threeD: c.threeD) ?? (o.callout ? .above : .right) {
         case .center: dataLabel(s, si, i, text, ChartRect(q.x - w, q.y - th, q.x + w, q.y + th), .center, .middle, size, col, nil, col)
         case .left: dataLabel(s, si, i, text, ChartRect(q.x - g - w, q.y - th, q.x - g, q.y + th), .right, .middle, size, col, q, col)
         case .above: dataLabel(s, si, i, text, ChartRect(q.x - w, q.y - g - th, q.x + w, q.y - g), .center, .bottom, size, col, q, col)
@@ -762,4 +1056,106 @@ struct BubbleScale {
 
     /// The x axis' room for the largest bubble: its radius as a fraction of `width`.
     func padding(_ width: Double) -> Double { width > 0 && maxRadius > 0 ? maxRadius / width : 0 }
+}
+
+extension ChartSpec {
+    /// A data table goes under a flat chart with a category axis along the bottom: column, line and area charts and
+    /// their combos, as PowerPoint offers it (not on a pie, doughnut, scatter, bubble, horizontal bar or 3-D chart).
+    public var takesDataTable: Bool {
+        guard !threeD, !series.isEmpty else { return false }
+        return series.allSatisfy { s in
+            [.column, .stackedColumn, .percentColumn, .line, .lineMarkers, .stackedLine, .percentLine, .area, .stackedArea, .percentArea]
+                .contains(seriesKind(s))
+        }
+    }
+}
+
+/// A data table under the plot, as PowerPoint draws `c:dTable`: a header row of category names under the plot's
+/// bands, then a row per series with its key and name left of the plot and its values under their categories, in grey
+/// lines (the outline, and the rows' and columns' borders when the table shows them).
+struct DataTableLayout {
+    let table: ChartDataTableStyle
+    let rowHeight: Double
+    let rows: Int
+    let nameWidth: Double
+    let base: Double
+
+    init(_ c: ChartSpec, _ t: ChartDataTableStyle, _ base: Double) {
+        table = t
+        self.base = base
+        rowHeight = base * 1.45
+        rows = 1 + Swift.min(c.series.count, 64)
+        let widest = Double(c.series.prefix(64).map { $0.name.unicodeScalars.count }.max() ?? 0)
+        nameWidth = widest * base * 0.55 + base * (t.keys ? 2.2 : 0.8)
+    }
+
+    var height: Double { rowHeight * Double(rows) + base * 0.3 }
+
+    func draw(_ l: inout Layout, _ plot: ChartRect, _ band: Double, _ slot: (Int) -> Double, _ ncat: Int, _ gutter: Double, _ textCol: ChartColor) {
+        let c = l.c
+        let top = plot.y1
+        let left = plot.x0 - nameWidth.rustMin(gutter)
+        func y(_ r: Int) -> Double { top + rowHeight * Double(r) }
+        let bottom = y(rows)
+        let size = base * 0.85
+        // The header: each category's name under its band.
+        for i in 0 ..< ncat {
+            guard let name = c.categories.at(i) else { continue }
+            let x = plot.x0 + band * slot(i)
+            l.label(name, ChartRect(x, y(0), x + band, y(1)), size, .center, .middle, textCol, false)
+        }
+        for (si, s) in c.series.prefix(rows - 1).enumerated() {
+            let r = si + 1
+            var nameX = left + base * 0.3
+            if table.keys {
+                // Bars and areas a filled key, lines a short line, as PowerPoint draws them.
+                let k = c.seriesKind(s)
+                let key = base * 0.55
+                let ky = (y(r) + y(r + 1) - key) / 2
+                if k.isBarLike || k.isArea {
+                    let paint: BarPaint = k.isBarLike ? l.paintOf(s.fill, l.seriesColor(si)) : .color(l.seriesFill(si, s))
+                    l.fillWith(paint, ChartRect(nameX, ky, nameX + key, ky + key))
+                    nameX += key + base * 0.35
+                } else {
+                    // `BarPaint.line` runs from 0.4 of the key's width before it to its end.
+                    let w = base * 1.1 / 1.4
+                    l.fillWith(.line(l.seriesLine(si, s), []), ChartRect(nameX + w * 0.4, ky, nameX + w * 1.4, ky + key))
+                    nameX += base * 1.1 + base * 0.35
+                }
+            }
+            l.label(s.name, ChartRect(nameX, y(r), plot.x0 - base * 0.2, y(r + 1)), size, .left, .middle, textCol, false)
+            for i in 0 ..< ncat {
+                guard let v = s.values.at(i) ?? nil else { continue }
+                let x = plot.x0 + band * slot(i)
+                l.label(c.dataLabel(s, v), ChartRect(x, y(r), x + band, y(r + 1)), size, .center, .middle, textCol, false)
+            }
+        }
+        var lines = ChartPath()
+        if table.horizontal {
+            for r in 1 ..< rows {
+                lines.move(to: ChartPoint(left, y(r)))
+                lines.line(to: ChartPoint(plot.x1, y(r)))
+            }
+        }
+        if table.vertical {
+            // Between the categories (from the plot's bottom), and the name column's edge (from the series rows).
+            for i in 1 ..< Swift.max(ncat, 1) {
+                let x = plot.x0 + band * Double(i)
+                lines.move(to: ChartPoint(x, top))
+                lines.line(to: ChartPoint(x, bottom))
+            }
+            lines.move(to: ChartPoint(plot.x0, top))
+            lines.line(to: ChartPoint(plot.x0, bottom))
+        }
+        if table.outline {
+            lines.move(to: ChartPoint(plot.x0, top))
+            lines.line(to: ChartPoint(plot.x1, top))
+            lines.line(to: ChartPoint(plot.x1, bottom))
+            lines.line(to: ChartPoint(left, bottom))
+            lines.line(to: ChartPoint(left, y(1)))
+            lines.line(to: ChartPoint(plot.x0, y(1)))
+            lines.line(to: ChartPoint(plot.x0, top))
+        }
+        l.stroke(lines, ChartStroke(.rgb(0xD9, 0xD9, 0xD9), width: 0.75))
+    }
 }

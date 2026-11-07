@@ -4,37 +4,67 @@
 import Foundation
 
 extension ChartSpec {
-    /// The smallest and largest value plotted: plain values as they are, stacked series as running sums from zero,
-    /// 100 % series as 0–1. (0, 0) without finite values.
-    func plottedExtent() -> (Double, Double) {
-        if series.isEmpty { return (0.0, 0.0) }
+    /// A series' own type: its own in a combo chart (columns when it names none), else the chart's.
+    public func seriesKind(_ s: ChartSeries) -> ChartKind {
+        if kind == .combo {
+            if let k = s.kind, k != .combo { return k }
+            return .column
+        }
+        return kind
+    }
+
+    /// Whether series `s` is plotted against the secondary value axis (combo charts only).
+    public func onSecondary(_ s: ChartSeries) -> Bool { kind == .combo && s.secondaryAxis }
+
+    /// The smallest and largest value plotted against one value axis: plain values as they are, stacked series as
+    /// running sums from zero, 100 % series as 0–1, and the trendlines of series that aren't stacked. (0, 0) without
+    /// finite values; nil when no series uses the axis.
+    func plottedExtent(secondary: Bool = false) -> (Double, Double)? {
+        let ser = series.filter { onSecondary($0) == secondary }
+        if ser.isEmpty { return !secondary && kind != .combo ? (0.0, 0.0) : nil }
         var ext = (Double.infinity, -Double.infinity)
-        if kind.stacked || kind.percent {
-            if kind.percent {
-                ext = (0.0, 1.0)
-            } else {
-                let n = series.map(\.values.count).max() ?? 0
-                let (product, overflow) = series.count.multipliedReportingOverflow(by: n)
-                let budget = Swift.min(overflow ? Int.max : product, 10_000_000)
-                let nClamped = Swift.min(n, budget / series.count)
-                for i in 0 ..< nClamped {
-                    var p = 0.0
-                    var m = 0.0
-                    var any = false
-                    for s in series {
-                        guard let v = s.values.at(i) ?? nil, v.isFinite else { continue }
-                        any = true
+        let hasStackedOrPercent = ser.contains { s in
+            let k = seriesKind(s)
+            return k.stacked || k.percent
+        }
+        var percent = false
+        if hasStackedOrPercent {
+            let n = ser.map(\.values.count).max() ?? 0
+            let (product, overflow) = ser.count.multipliedReportingOverflow(by: n)
+            let budget = Swift.min(overflow ? Int.max : product, 10_000_000)
+            let nClamped = Swift.min(n, budget / ser.count)
+            for i in 0 ..< nClamped {
+                var p = 0.0
+                var m = 0.0
+                var stacked = false
+                for s in ser {
+                    let k = seriesKind(s)
+                    guard let v = s.values.at(i) ?? nil, v.isFinite else { continue }
+                    if k.percent {
+                        percent = true
+                    } else if k.stacked {
+                        stacked = true
                         if v >= 0.0 { p += v } else { m += v }
+                    } else {
+                        widen(&ext, v)
                     }
-                    if any {
-                        ext.1 = ext.1.rustMax(p)
-                        ext.0 = ext.0.rustMin(m)
-                    }
+                }
+                if stacked {
+                    ext.1 = ext.1.rustMax(p)
+                    ext.0 = ext.0.rustMin(m)
                 }
             }
         } else {
-            for s in series {
+            for s in ser {
                 for v in s.values.compactMap({ $0 }) where v.isFinite { widen(&ext, v) }
+            }
+        }
+        if percent {
+            ext.0 = ext.0.rustMin(0.0)
+            ext.1 = ext.1.rustMax(1.0)
+        } else {
+            for s in ser where !seriesKind(s).stacked {
+                for y in s.trendlineYs(seriesKind(s).isXY) { widen(&ext, y) }
             }
         }
         let (lo, hi) = ext
@@ -44,9 +74,34 @@ extension ChartSpec {
     /// The value axis' scale — (min, max, major unit) — with at most `maxIntervals` intervals: the bounds and unit
     /// the chart fixes, else Office's automatic ones.
     public func axisScale(_ maxIntervals: Int) -> (min: Double, max: Double, step: Double) {
-        let (lo, hi) = plottedExtent()
-        let s = MarqueeCharts.axisScale(lo, hi, valueAxis.min, valueAxis.max, valueAxis.majorUnit, maxIntervals, !kind.percent)
+        axisScale(secondary: false, maxIntervals) ?? { let s = MarqueeCharts.axisScale(0, 1, nil, nil, nil, maxIntervals, true); return (s.0, s.1, s.2) }()
+    }
+
+    /// One value axis' scale: the primary's, or a combo chart's secondary one; nil when no series uses that axis.
+    public func axisScale(secondary: Bool, _ maxIntervals: Int) -> (min: Double, max: Double, step: Double)? {
+        guard let (lo, hi) = plottedExtent(secondary: secondary) else { return nil }
+        let a = secondary ? secondaryAxis : valueAxis
+        let s = MarqueeCharts.axisScale(lo, hi, a.min, a.max, a.majorUnit, maxIntervals, secondary || !kind.percent)
         return (s.0, s.1, s.2)
+    }
+
+    /// A logarithmic value axis' scale in exponents — (min, max, unit), so its labels are `base^min`,
+    /// `base^(min+unit)`… — over the positive values: whole powers, as PowerPoint draws them. nil when the axis isn't
+    /// logarithmic or nothing is positive.
+    public func logAxisScale(_ maxIntervals: Int) -> (min: Double, max: Double, step: Double)? {
+        guard let b = valueAxis.logBase, b.isFinite, b >= 2.0 else { return nil }
+        var range: (Double, Double)?
+        for s in series where !onSecondary(s) {
+            for v in s.values.compactMap({ $0 }) where v.isFinite && v > 0.0 {
+                range = range.map { ($0.0.rustMin(v), $0.1.rustMax(v)) } ?? (v, v)
+            }
+        }
+        guard let (lo0, hi0) = range else { return nil }
+        func e(_ v: Double) -> Double { Foundation.log(v) / Foundation.log(b) }
+        let lo = valueAxis.min.flatMap { $0 > 0.0 ? e($0) : nil } ?? e(lo0).rounded(.down)
+        let hi = (valueAxis.max.flatMap { $0 > 0.0 ? e($0) : nil } ?? e(hi0).rounded(.up)).rustMax(lo + 1.0)
+        let unit = ((hi - lo) / Double(Swift.max(maxIntervals, 1))).rounded(.up).rustMax(1.0)
+        return (lo, lo + ((hi - lo) / unit).rounded(.up) * unit, unit)
     }
 
     /// A scatter or bubble chart's x axis (min, max, major unit): one scale over every series' x values, from zero when
@@ -72,16 +127,16 @@ extension ChartSpec {
     }
 
     /// A value axis label in the axis' number format and the chart's language.
-    public func axisLabel(_ v: Double) -> String {
-        let code = valueAxis.format
+    public func axisLabel(_ v: Double, secondary: Bool = false) -> String {
+        let code = secondary ? secondaryAxis.format : valueAxis.format
         // A 100 % stacked chart's value axis counts in percent unless it says otherwise.
-        let fmt = (code == nil || code == "General") && kind.percent ? "0%" : code ?? "General"
+        let fmt = (code == nil || code == "General") && !secondary && kind.percent ? "0%" : code ?? "General"
         return NumberFormat.format(fmt, v, language)
     }
 
     /// A data label's number: the series' format, else the axis', in the chart's language.
     public func dataLabel(_ s: ChartSeries, _ v: Double) -> String {
-        NumberFormat.format(s.numberFormat ?? valueAxis.format ?? "General", v, language)
+        NumberFormat.format(s.numberFormat ?? (onSecondary(s) ? secondaryAxis.format : valueAxis.format) ?? "General", v, language)
     }
 
     /// The text of point `i`'s data label in series `s` with value `v`: the series name, category name, value and

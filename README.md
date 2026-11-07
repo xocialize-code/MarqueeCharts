@@ -21,6 +21,7 @@ follow Excel's codes. See NOTICE.
 | Areas | Area, Stacked, 100% Stacked |
 | Circles | Pie, Doughnut |
 | XY | Scatter (markers, with straight or smooth lines where a series has a line), Bubble |
+| Combo | Each series a column, bar, line or area type of its own, on the primary or a secondary value axis |
 
 Every type supports:
 
@@ -42,6 +43,13 @@ Every type supports:
 - **Colours:** vary colours by point, and monochrome palettes.
 - **Line styles:** smooth lines and markers.
 - **Bars and doughnuts:** gap width, overlap and hole size.
+- **Trendlines:** linear, exponential, logarithmic, polynomial (order 2–6), power and moving average, with a
+  forecast, a fixed intercept, the equation and R², and their own legend entries.
+- **Error bars:** fixed, percentage, standard deviation, standard error or custom amounts, either way or both, with
+  or without caps.
+- **Value axis:** logarithmic (any base from 2), and a combo chart's secondary axis with its own bounds, unit and
+  format.
+- **Up/down bars** on line charts, and a **data table** under the plot (with or without legend keys and borders).
 - **Scatter and bubble:** a value x axis over every series' x values; bubble sizes by area or by width, and a bubble
   scale (0–300 %).
 

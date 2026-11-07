@@ -159,6 +159,20 @@ struct OptionsPane: View {
                 TextField("Category title", text: Binding(get: { model.spec.categoryAxisTitle ?? "" }, set: { model.spec.categoryAxisTitle = $0.isEmpty ? nil : $0 }))
                 TextField("Value title", text: Binding(get: { model.spec.valueAxisTitle ?? "" }, set: { model.spec.valueAxisTitle = $0.isEmpty ? nil : $0 }))
             }
+            Section("Series") {
+                ForEach(model.spec.series.indices, id: \.self) { i in
+                    SeriesOptions(model: model, index: i)
+                }
+            }
+            Section("More") {
+                Toggle("Logarithmic value axis", isOn: Binding(get: { model.spec.valueAxis.logBase != nil }, set: { model.spec.valueAxis.logBase = $0 ? 10 : nil }))
+                    .accessibilityIdentifier("logAxis")
+                Toggle("Up/down bars", isOn: $model.spec.upDownBars)
+                    .accessibilityIdentifier("upDownBars")
+                Toggle("Data table", isOn: Binding(get: { model.spec.dataTable != nil }, set: { model.spec.dataTable = $0 ? ChartDataTableStyle() : nil }))
+                    .accessibilityIdentifier("dataTable")
+                TextField("Secondary format", text: Binding(get: { model.spec.secondaryAxis.format ?? "" }, set: { model.spec.secondaryAxis.format = $0.isEmpty ? nil : $0 }))
+            }
             Section("Style") {
                 Toggle("Vary colours by point", isOn: $model.spec.varyColors)
                 Toggle("Monochrome", isOn: $model.spec.monochrome)
@@ -278,5 +292,51 @@ struct ValueCell: View {
             .onChange(of: text) { _, v in if !focused { draft = v } }
             .onChange(of: focused) { _, f in if !f { commit(draft) } }
             .onSubmit { commit(draft) }
+    }
+}
+
+
+/// One series' own options: its type and axis in a combo chart, a trendline and error bars.
+struct SeriesOptions: View {
+    @Bindable var model: LabModel
+    let index: Int
+
+    var series: Binding<ChartSeries> {
+        Binding(get: { model.spec.series.at(index) ?? ChartSeries(name: "", values: []) }, set: { if model.spec.series.indices.contains(index) { model.spec.series[index] = $0 } })
+    }
+
+    var body: some View {
+        // Plain rows, not a disclosure group: accessibility can't open a SwiftUI disclosure group, and the lab is tested
+        // through it.
+        Text(series.wrappedValue.name.isEmpty ? "Series \(index + 1)" : series.wrappedValue.name).fontWeight(.semibold)
+        Group {
+            if model.spec.kind == .combo {
+                Picker("Type", selection: Binding(get: { series.wrappedValue.kind ?? .column }, set: { series.wrappedValue.kind = $0 })) {
+                    ForEach(ChartKind.allCases.filter { !$0.isPie && $0 != .combo && !$0.isXY }, id: \.self) { Text($0.label).tag($0) }
+                }
+                .accessibilityIdentifier("seriesKind-\(index)")
+                Toggle("Secondary axis", isOn: series.secondaryAxis)
+                    .accessibilityIdentifier("secondary-\(index)")
+            }
+            Picker("Trendline", selection: Binding(
+                get: { series.wrappedValue.trendlines.first?.kind },
+                set: { k in series.wrappedValue.trendlines = k.map { [ChartTrendline(kind: $0, order: 2, period: 2, showRSquared: $0 != .movingAvg)] } ?? [] }
+            )) {
+                Text("None").tag(ChartTrendline.Kind?.none)
+                ForEach(ChartTrendline.Kind.allCases, id: \.self) { Text($0.label).tag(ChartTrendline.Kind?.some($0)) }
+            }
+            .accessibilityIdentifier("trendline-\(index)")
+            Picker("Error bars", selection: Binding(
+                get: { series.wrappedValue.errorBars?.amount },
+                set: { a in series.wrappedValue.errorBars = a.map { ChartErrorBars(amount: $0, value: $0 == .percentage ? 10 : $0 == .fixed ? 0.5 : 1) } }
+            )) {
+                Text("None").tag(ChartErrorBars.Amount?.none)
+                Text("Fixed").tag(ChartErrorBars.Amount?.some(.fixed))
+                Text("Percentage").tag(ChartErrorBars.Amount?.some(.percentage))
+                Text("Standard deviation").tag(ChartErrorBars.Amount?.some(.standardDeviation))
+                Text("Standard error").tag(ChartErrorBars.Amount?.some(.standardError))
+            }
+            .accessibilityIdentifier("errorBars-\(index)")
+        }
     }
 }

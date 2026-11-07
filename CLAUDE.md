@@ -21,6 +21,9 @@ The chart engine lifted out of a DeckCraftNative-based renderer (2026-11-07). Th
   - A line's segment belongs to the point it runs to.
   - An area belongs to its first point.
   - A data label belongs to its point.
+  - An error bar belongs to its point; an up/down bar to its category's last series.
+  - A trendline and its caption belong to their series' last point.
+  - A data table is background.
   - Keep this true: hosts' chart builds depend on it.
 
 - **Roles:** every mark says what it draws (`ChartMark.Role`: bar, slice, segment, area, bubble, marker, label), and Grow
@@ -63,6 +66,8 @@ it before a release.
 | Spec, theme, palette | `Sources/MarqueeCharts/Spec.swift` |
 | Layout (from DCRender `Chart.swift`) | `Sources/MarqueeCharts/Layout.swift` |
 | Marks, parts, drawings | `Sources/MarqueeCharts/Drawing.swift` |
+| Combo types, trendlines, error bars, data table options | `Sources/MarqueeCharts/Options.swift` |
+| Trendline fits (from DCModel `Trendline.swift`) | `Sources/MarqueeCharts/Trendline.swift` |
 | Builds and part states | `Sources/MarqueeCharts/Build.swift` |
 | Axis scale and labels | `Sources/MarqueeCharts/Scale.swift` |
 | Number formats | `Sources/MarqueeCharts/NumberFormat.swift` |

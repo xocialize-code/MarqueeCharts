@@ -15,6 +15,8 @@ public enum ChartKind: String, Codable, CaseIterable, Sendable {
     case scatter
     /// A scatter chart whose points are circles sized by `sizes`.
     case bubble
+    /// Each series in a type of its own (`ChartSeries.kind`), some on a secondary value axis.
+    case combo
 
     public var label: String {
         switch self {
@@ -35,6 +37,7 @@ public enum ChartKind: String, Codable, CaseIterable, Sendable {
         case .doughnut: "Doughnut"
         case .scatter: "Scatter"
         case .bubble: "Bubble"
+        case .combo: "Combo"
         }
     }
 
@@ -278,11 +281,18 @@ public struct ChartSeries: Hashable, Sendable, Codable {
     public var xValues: [Double?]
     /// A bubble chart's bubble sizes (nil, zero or negative: no bubble). With none at all, every bubble is the largest.
     public var sizes: [Double?]
+    /// Its type in a combo chart (nil: columns).
+    public var kind: ChartKind?
+    /// Plotted against a combo chart's secondary value axis, on the right.
+    public var secondaryAxis: Bool
+    /// Up to eight trendlines.
+    public var trendlines: [ChartTrendline]
+    public var errorBars: ChartErrorBars?
 
     public init(
         name: String, values: [Double?], fill: ChartFill? = nil, line: ChartLine? = nil, pointFills: [PointFill] = [], dataLabels: Bool? = nil,
         smooth: Bool = false, marker: Bool = false, numberFormat: String? = nil, labelOptions: LabelOptions? = nil, xValues: [Double?] = [],
-        sizes: [Double?] = []
+        sizes: [Double?] = [], kind: ChartKind? = nil, secondaryAxis: Bool = false, trendlines: [ChartTrendline] = [], errorBars: ChartErrorBars? = nil
     ) {
         self.name = name
         self.values = values
@@ -296,6 +306,10 @@ public struct ChartSeries: Hashable, Sendable, Codable {
         self.labelOptions = labelOptions
         self.xValues = xValues
         self.sizes = sizes
+        self.kind = kind
+        self.secondaryAxis = secondaryAxis
+        self.trendlines = trendlines
+        self.errorBars = errorBars
     }
 
     public init(from decoder: Decoder) throws {
@@ -312,7 +326,10 @@ public struct ChartSeries: Hashable, Sendable, Codable {
             numberFormat: try c.decodeIfPresent(String.self, forKey: .numberFormat),
             labelOptions: try c.decodeIfPresent(LabelOptions.self, forKey: .labelOptions),
             xValues: try c.decodeIfPresent([Double?].self, forKey: .xValues) ?? [],
-            sizes: try c.decodeIfPresent([Double?].self, forKey: .sizes) ?? []
+            sizes: try c.decodeIfPresent([Double?].self, forKey: .sizes) ?? [],
+            kind: try c.decodeIfPresent(ChartKind.self, forKey: .kind), secondaryAxis: try c.decodeIfPresent(Bool.self, forKey: .secondaryAxis) ?? false,
+            trendlines: try c.decodeIfPresent([ChartTrendline].self, forKey: .trendlines) ?? [],
+            errorBars: try c.decodeIfPresent(ChartErrorBars.self, forKey: .errorBars)
         )
     }
 }
@@ -326,13 +343,16 @@ public struct ValueAxis: Hashable, Sendable, Codable {
     public var format: String?
     /// No labels (the gridlines may stay).
     public var hidden: Bool
+    /// A logarithmic axis' base (2 or more; nil: linear). The primary axis only.
+    public var logBase: Double?
 
-    public init(min: Double? = nil, max: Double? = nil, majorUnit: Double? = nil, format: String? = nil, hidden: Bool = false) {
+    public init(min: Double? = nil, max: Double? = nil, majorUnit: Double? = nil, format: String? = nil, hidden: Bool = false, logBase: Double? = nil) {
         self.min = min
         self.max = max
         self.majorUnit = majorUnit
         self.format = format
         self.hidden = hidden
+        self.logBase = logBase
     }
 
     public init(from decoder: Decoder) throws {
@@ -340,7 +360,7 @@ public struct ValueAxis: Hashable, Sendable, Codable {
         self.init(
             min: try c.decodeIfPresent(Double.self, forKey: .min), max: try c.decodeIfPresent(Double.self, forKey: .max),
             majorUnit: try c.decodeIfPresent(Double.self, forKey: .majorUnit), format: try c.decodeIfPresent(String.self, forKey: .format),
-            hidden: try c.decodeIfPresent(Bool.self, forKey: .hidden) ?? false
+            hidden: try c.decodeIfPresent(Bool.self, forKey: .hidden) ?? false, logBase: try c.decodeIfPresent(Double.self, forKey: .logBase)
         )
     }
 }
@@ -393,6 +413,12 @@ public struct ChartSpec: Hashable, Sendable, Codable {
     public var bubbleScale: Double?
     /// A bubble's size sets its width, not its area.
     public var bubbleSizeWidth: Bool
+    /// A combo chart's secondary value axis, on the right.
+    public var secondaryAxis: ValueAxis
+    /// A line chart's up/down bars: from its first series to its last in each category, hollow where it rose.
+    public var upDownBars: Bool
+    /// A data table under the plot, in place of the category labels.
+    public var dataTable: ChartDataTableStyle?
 
     public init(
         kind: ChartKind = .column, title: String? = nil, categories: [String] = [], series: [ChartSeries] = [], legend: LegendPosition? = .bottom,
@@ -401,7 +427,7 @@ public struct ChartSpec: Hashable, Sendable, Codable {
         plotFill: ChartFill? = nil, chartFill: ChartFill? = nil, textColor: ChartColor? = nil, holeSize: Double = 0.5, gapWidth: Double = 2.19,
         overlap: Double = -0.27, varyColors: Bool = false, valueAxis: ValueAxis = ValueAxis(), categoriesReversed: Bool = false,
         language: String? = nil, labelOptions: LabelOptions? = nil, threeD: Bool = false, bubbleScale: Double? = nil,
-        bubbleSizeWidth: Bool = false
+        bubbleSizeWidth: Bool = false, secondaryAxis: ValueAxis = ValueAxis(), upDownBars: Bool = false, dataTable: ChartDataTableStyle? = nil
     ) {
         self.kind = kind
         self.title = title
@@ -431,6 +457,9 @@ public struct ChartSpec: Hashable, Sendable, Codable {
         self.threeD = threeD
         self.bubbleScale = bubbleScale
         self.bubbleSizeWidth = bubbleSizeWidth
+        self.secondaryAxis = secondaryAxis
+        self.upDownBars = upDownBars
+        self.dataTable = dataTable
     }
 
     public init(from decoder: Decoder) throws {
@@ -451,7 +480,8 @@ public struct ChartSpec: Hashable, Sendable, Codable {
             valueAxis: try v(.valueAxis, ValueAxis()), categoriesReversed: try v(.categoriesReversed, false),
             language: try c.decodeIfPresent(String.self, forKey: .language), labelOptions: try c.decodeIfPresent(LabelOptions.self, forKey: .labelOptions),
             threeD: try v(.threeD, false), bubbleScale: try c.decodeIfPresent(Double.self, forKey: .bubbleScale),
-            bubbleSizeWidth: try v(.bubbleSizeWidth, false)
+            bubbleSizeWidth: try v(.bubbleSizeWidth, false), secondaryAxis: try v(.secondaryAxis, ValueAxis()), upDownBars: try v(.upDownBars, false),
+            dataTable: try c.decodeIfPresent(ChartDataTableStyle.self, forKey: .dataTable)
         )
     }
 
