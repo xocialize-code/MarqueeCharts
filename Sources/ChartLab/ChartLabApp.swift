@@ -20,6 +20,17 @@ struct ChartLabApp: App {
                 Button("Open Spec…") { openSpec(model) }.keyboardShortcut("o")
                 Button("Save Spec…") { saveSpec(model) }.keyboardShortcut("s")
             }
+            CommandGroup(after: .pasteboard) {
+                Divider()
+                Button("Copy Data") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(ChartDataTable.text(ChartDataTable.rows(model.spec)), forType: .string)
+                }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                Button("Paste Data") { pasteData(model, seriesInRows: false) }
+                    .keyboardShortcut("v", modifiers: [.command, .shift])
+                Button("Paste Data, Series in Rows") { pasteData(model, seriesInRows: true) }
+            }
             CommandMenu("Export") {
                 Button("Frame as PNG…") { exportFrame(model) }.keyboardShortcut("e")
                 Button("Build Frames…") { exportFolder(model, frames: true) }
@@ -37,6 +48,12 @@ final class LabDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+}
+
+/// The clipboard's table (from a spreadsheet, or CSV text) as the chart's data.
+@MainActor func pasteData(_ model: LabModel, seriesInRows: Bool) {
+    guard let text = NSPasteboard.general.string(forType: .string) else { return }
+    model.spec = model.spec.pasting(text, seriesInRows: seriesInRows)
 }
 
 @MainActor func openSpec(_ model: LabModel) {

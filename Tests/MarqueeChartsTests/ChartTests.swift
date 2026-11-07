@@ -213,3 +213,61 @@ func pixels(_ img: CGImage) -> (Int, Int) -> (UInt8, UInt8, UInt8, UInt8) {
         return (data[o], data[o + 1], data[o + 2], data[o + 3])
     }
 }
+
+@Suite struct DataTableTests {
+    @Test func excelClipboard() {
+        let t = "\tSales\tCosts\r\nQ1\t1,234.5\t(200)\r\nQ2\t12%\t\r\n\"Q3, late\"\t$3.00\t-4\r\n"
+        let rows = ChartDataTable.cells(t)
+        #expect(rows.count == 4)
+        #expect(rows[3][0] == "Q3, late")
+        let d = ChartDataTable.data(rows)
+        #expect(d.categories == ["Q1", "Q2", "Q3, late"])
+        #expect(d.series.map(\.name) == ["Sales", "Costs"])
+        #expect(d.series[0].values == [1234.5, 0.12, 3])
+        #expect(d.series[1].values == [-200, nil, -4])
+    }
+
+    @Test func csvWithQuotesAndSemicolons() {
+        #expect(ChartDataTable.cells("a,\"b \"\"x\"\"\nc\",d\n1,2,3") == [["a", "b \"x\"\nc", "d"], ["1", "2", "3"]])
+        #expect(ChartDataTable.cells("a;b;c\n1,5;2;3") == [["a", "b", "c"], ["1,5", "2", "3"]])
+        #expect(ChartDataTable.cells("") == [])
+        #expect(ChartDataTable.cells("1\t2\n3") == [["1", "2"], ["3", ""]])
+    }
+
+    @Test func numbersByLanguage() {
+        let n = { (s: String, l: String?) in ChartDataTable.number(s, language: l) }
+        #expect(n("1,234.5", nil) == 1234.5)
+        #expect(n("1.234,5", "de-DE") == 1234.5)
+        #expect(n("1,234.5", "de-DE") == 1234.5)
+        #expect(n("2,5", "de-DE") == 2.5)
+        #expect(n("2.5", "de-DE") == 2.5)
+        #expect(n("1.234", "de-DE") == 1234)
+        #expect(n("1,234", nil) == 1234)
+        #expect(n("1 234,5", "fr-FR") == 1234.5)
+        #expect(n("1\u{a0}234,5 ₽", "ru-RU") == 1234.5)
+        #expect(n("1.234.567", nil) == 1_234_567)
+        #expect(n("−3", nil) == -3)
+        #expect(n("1.5E+3", nil) == 1500)
+        #expect(n("Q1", nil) == nil)
+        #expect(n("Event", nil) == nil)
+        #expect(n("", nil) == nil)
+        #expect(n("inf", nil) == nil)
+    }
+
+    @Test func headersAndLabelsAreFound() {
+        // Numbers only: generated names.
+        let plain = ChartDataTable.data([["1", "2"], ["3", "4"]])
+        #expect(plain.categories == ["Category 1", "Category 2"])
+        #expect(plain.series.map(\.name) == ["Series 1", "Series 2"])
+        #expect(plain.series[1].values == [2, 4])
+        // Series in rows.
+        let rows = ChartDataTable.data([["", "Q1", "Q2"], ["North", "1", "2"], ["South", "3", "4"]], seriesInRows: true)
+        #expect(rows.categories == ["Q1", "Q2"])
+        #expect(rows.series.map(\.name) == ["North", "South"])
+        #expect(rows.series[1].values == [3, 4])
+        // A round trip through the sheet.
+        let c = ChartSpec.sample(.column)
+        let back = c.pasting(ChartDataTable.text(ChartDataTable.rows(c)))
+        #expect(back == c)
+    }
+}
