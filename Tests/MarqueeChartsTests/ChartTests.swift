@@ -3,6 +3,7 @@ import Foundation
 import Testing
 @testable import MarqueeCharts
 @testable import MarqueeChartsGraphics
+import MarqueeChartsLottie
 
 @Suite struct ChartTests {
     // MARK: Spec
@@ -294,5 +295,130 @@ func pixels(_ img: CGImage) -> (Int, Int) -> (UInt8, UInt8, UInt8, UInt8) {
         #expect(throws: ChartDocument.ReadError.newerVersion(2)) {
             try ChartDocument.read(Data(#"{"format":"marquee-chart","version":2,"chart":{}}"#.utf8))
         }
+    }
+}
+
+@Suite struct GrowTests {
+    @Test func barsRiseFromTheirBase() throws {
+        let c = ChartSpec.sample(.column)
+        let d = ChartLayout.draw(c, theme: .standard, width: 480, height: 270)
+        let bar = try #require(d.marks.first { if case .bar = $0.role { true } else { false } })
+        guard case .bar(_, let base) = bar.role, let full = bar.bounds else { return }
+        let half = try #require(bar.grown(0.5, alongSeries: false)?.mark.bounds)
+        #expect(Swift.abs(half.y1 - base) < 1e-9)
+        #expect(Swift.abs(half.height - full.height / 2) < 1e-9)
+        #expect(bar.grown(0, alongSeries: false) == nil)
+        #expect(bar.grown(1, alongSeries: false)?.mark == bar)
+    }
+
+    @Test func linesDrawOnAlongTheirSeries() throws {
+        let c = ChartSpec.sample(.line)
+        let d = ChartLayout.draw(c, theme: .standard, width: 480, height: 270)
+        let segs = d.marks.filter { if case .segment = $0.role { $0.part == .point(series: 0, category: $0.partCategory) } else { false } }
+        #expect(segs.count == 3)
+        // A third of the way: the first segment drawn, the second not started.
+        #expect(segs[0].grown(1.0 / 3.0, alongSeries: true)?.mark == segs[0])
+        #expect(segs[1].grown(1.0 / 3.0 - 1e-6, alongSeries: true) == nil)
+        // By category, each segment draws on in its own step.
+        #expect(segs[1].grown(0.5, alongSeries: false) != nil)
+    }
+
+    @Test func slicesSweep() throws {
+        let c = ChartSpec.sample(.pie)
+        let d = ChartLayout.draw(c, theme: .standard, width: 400, height: 400)
+        let slice = try #require(d.marks.first { if case .slice = $0.role { true } else { false } })
+        let a = try #require(slice.grown(0.25, alongSeries: false)?.mark)
+        let b = try #require(slice.grown(0.75, alongSeries: false)?.mark)
+        func count(_ m: ChartMark) -> Int { if case .fill(let p, _, _) = m.kind { p.elements.count } else { -1 } }
+        #expect(count(a) == count(b), "the same points while it sweeps")
+    }
+
+    @Test func aFinishedGrowDrawsTheChart() throws {
+        for kind in [ChartKind.column, .stackedBar, .line, .stackedArea, .doughnut] {
+            var c = ChartSpec.sample(kind)
+            c.dataLabels = true
+            let d = ChartLayout.draw(c, theme: .standard, width: 320, height: 180)
+            let b = ChartBuild(kind: .bySeries, effect: .grow, overlap: 0.5, easing: .easeOut)
+            let all = try #require(ChartRenderer.image(d, theme: .standard, scale: 1))
+            let done = try #require(ChartRenderer.image(d, theme: .standard, scale: 1, states: b.states(c, parts: d.parts, at: b.length(c))))
+            #expect(ChartRenderer.png(all) == ChartRenderer.png(done), "\(kind)")
+        }
+    }
+
+    @Test func easingAndOverlap() {
+        #expect(ChartEasing.linear(0.3) == 0.3)
+        #expect(ChartEasing.easeOut(0.5) > 0.5 && ChartEasing.easeIn(0.5) < 0.5)
+        #expect(Swift.abs(ChartEasing.easeInOut(0.5) - 0.5) < 1e-6)
+        let b = ChartBuild(kind: .bySeries, duration: 1, overlap: 0.5)
+        #expect(b.start(ofStep: 2) == 1)
+        #expect(b.length(.sample(.column)) == 2.5)
+    }
+
+    /// Writes Grow builds of several types as frame strips to `MARQUEE_CHARTS_OUT`.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["MARQUEE_CHARTS_OUT"] != nil))
+    func writeGrowStrips() throws {
+        let out = URL(fileURLWithPath: ProcessInfo.processInfo.environment["MARQUEE_CHARTS_OUT"] ?? "")
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let cases: [(ChartKind, ChartBuildKind)] = [(.column, .byCategory), (.line, .bySeries), (.pie, .byCategory), (.stackedArea, .bySeries), (.bar, .bySeriesElement)]
+        for (kind, bk) in cases {
+            var c = ChartSpec.sample(kind)
+            c.dataLabels = true
+            let d = ChartLayout.draw(c, theme: .standard, width: 320, height: 180)
+            let b = ChartBuild(kind: bk, effect: .grow, animateBackground: false, duration: 0.6, overlap: 0.3, easing: .easeOut)
+            let len = b.length(c)
+            for (k, f) in [0.15, 0.35, 0.55, 0.75, 1.0].enumerated() {
+                let img = try #require(ChartRenderer.image(d, theme: .standard, scale: 1, states: b.states(c, parts: d.parts, at: len * f)))
+                try ChartRenderer.png(img)?.write(to: out.appendingPathComponent("grow-\(kind.rawValue)-\(k).png"))
+            }
+        }
+    }
+}
+
+extension ChartMark {
+    var partCategory: Int { if case .point(_, let c) = part { c } else { -1 } }
+}
+
+@Suite struct LottieTests {
+    func json(_ d: Data) throws -> [String: Any] { try #require(try JSONSerialization.jsonObject(with: d) as? [String: Any]) }
+
+    @Test func aFinishedChartIsOneFrame() throws {
+        let c = ChartSpec.sample(.column)
+        let d = ChartLayout.draw(c, theme: .standard, width: 480, height: 270)
+        let j = try json(ChartLottie.animation(d, chart: c, theme: .standard, build: nil, options: .init(scale: 2)))
+        #expect(j["w"] as? Int == 960 && j["h"] as? Int == 540)
+        #expect(j["op"] as? Int == 1)
+        let layers = try #require(j["layers"] as? [[String: Any]])
+        #expect(layers.count >= d.parts.count)
+        // Text came out as outlines: no text layers, and the background's shapes hold glyph paths.
+        #expect(!layers.contains { $0["ty"] as? Int == 5 })
+    }
+
+    @Test func buildsBecomeKeyframes() throws {
+        for (kind, effect) in [(ChartKind.column, ChartEffect.grow), (.pie, .grow), (.line, .grow), (.bar, .wipe), (.area, .fade), (.doughnut, .appear)] {
+            let c = ChartSpec.sample(kind)
+            let d = ChartLayout.draw(c, theme: .standard, width: 480, height: 270)
+            let b = ChartBuild(kind: kind.isPie ? .byCategory : .bySeries, effect: effect, duration: 0.5, overlap: 0.25, easing: .easeOut)
+            let data = ChartLottie.animation(d, chart: c, theme: .standard, build: b, options: .init(fps: 30, hold: 1))
+            let j = try json(data)
+            #expect(j["op"] as? Int == Int((b.length(c) + 1) * 30) + 1 || j["op"] as? Int == Int(((b.length(c) + 1) * 30).rounded(.up)) + 1, "\(kind)")
+            let text = String(decoding: data, as: UTF8.self)
+            switch effect {
+            case .grow:
+                #expect(text.contains(#""a":1"#), "\(kind): animated")
+                if kind == .line { #expect(text.contains(#""ty":"tm""#)) }
+            case .wipe: #expect(text.contains("masksProperties"))
+            case .fade: #expect(text.contains(#""o":{"a":1"#))
+            case .appear: #expect(true)
+            }
+        }
+    }
+
+    @Test func textOutlinesFollowTheText() {
+        let t = ChartText("Q1 2026", box: ChartRect(0, 0, 100, 20), size: 12, color: .black, align: .center, anchor: .middle)
+        let p = ChartRenderer.textOutlines(t, fontFamily: nil)
+        let b = p.boundingBoxOfPath
+        #expect(!p.isEmpty)
+        #expect(b.midX > 40 && b.midX < 60)
+        #expect(b.minY >= 0 && b.maxY <= 20)
     }
 }

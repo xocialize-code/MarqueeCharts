@@ -31,8 +31,9 @@ struct Layout {
     let w: Double
     let h: Double
     var marks: [ChartMark] = []
-    /// The part the next marks belong to.
+    /// The part the next marks belong to, and what they draw.
     var part: ChartPart = .background
+    var role: ChartMark.Role = .none
 
     init(c: ChartSpec, theme: ChartTheme, w: Double, h: Double) {
         self.c = c
@@ -43,20 +44,22 @@ struct Layout {
 
     // MARK: Marks
 
-    mutating func fill(_ p: ChartPath, _ paint: ChartPaint, _ box: ChartRect) { marks.append(ChartMark(part, .fill(p, paint, box: box))) }
+    mutating func fill(_ p: ChartPath, _ paint: ChartPaint, _ box: ChartRect) { marks.append(ChartMark(part, .fill(p, paint, box: box), role: role)) }
 
     mutating func fill(_ p: ChartPath, _ col: ChartColor, _ opacity: Double = 1) {
-        marks.append(ChartMark(part, .fill(p, .color(col, opacity: opacity), box: p.bounds ?? ChartRect(0, 0, 0, 0))))
+        marks.append(ChartMark(part, .fill(p, .color(col, opacity: opacity), box: p.bounds ?? ChartRect(0, 0, 0, 0)), role: role))
     }
 
-    mutating func stroke(_ p: ChartPath, _ s: ChartStroke) { marks.append(ChartMark(part, .stroke(p, s))) }
+    mutating func stroke(_ p: ChartPath, _ s: ChartStroke) { marks.append(ChartMark(part, .stroke(p, s), role: role)) }
 
     mutating func label(
         _ text: String, _ r: ChartRect, _ size: Double, _ align: ChartText.Align, _ anchor: ChartText.Anchor, _ col: ChartColor, _ bold: Bool,
         _ transform: ChartTransform = .identity
     ) {
         if text.isEmpty { return }
-        marks.append(ChartMark(part, .text(ChartText(text, box: r, size: size, bold: bold, color: col, align: align, anchor: anchor, transform: transform))))
+        // A point's text is its data label; the background's has no role.
+        let r0: ChartMark.Role = part == .background ? .none : .label
+        marks.append(ChartMark(part, .text(ChartText(text, box: r, size: size, bold: bold, color: col, align: align, anchor: anchor, transform: transform)), role: r0))
     }
 
     // MARK: Colours and paints
@@ -290,8 +293,10 @@ struct Layout {
             p.close()
             var col = seriesColor(i)
             if let pf = s.pointFills.first(where: { $0.index == i }), case .solid(let cc) = pf.fill { col = cc }
+            role = .slice(center: cen, inner: hole, outer: r, start: a0, sweep: sweep)
             fill(p, col)
             stroke(p, ChartStroke(theme.separator, width: 1))
+            role = .none
             if c.showsDataLabels(s) {
                 let mid = a0 + sweep / 2
                 let o = c.labelOptions(s)
@@ -469,8 +474,12 @@ struct Layout {
                 let r = (horiz
                     ? ChartRect(toV(a), plot.y0 + start, toV(b), plot.y0 + start + bar)
                     : ChartRect(plot.x0 + start, toV(b), plot.x0 + start + bar, toV(a))).abs
+                // A bar grows from the end nearer its stack's base (zero, or the bar under it).
+                let baseValue = stacked ? (v >= 0 ? a : b) : 0
+                role = .bar(horizontal: horiz, base: toV(baseValue))
                 fillWith(barPaint(si, i, s), r)
                 if let (oc, ow) = barOutline(s), ow > 0 { stroke(.rect(r), ChartStroke(oc, width: ow)) }
+                role = .none
                 if c.showsDataLabels(s), let v = s.values.at(i) ?? nil {
                     barLabel(s, si, i, c.labelText(s, i, v), r, horiz, v < 0, base, textCol)
                 }
@@ -516,6 +525,8 @@ struct Layout {
             if areaKind {
                 // An area comes with its first point.
                 part = .point(series: si, category: fc)
+                role = .area(top: pts, floor: kind.stacked ? pts.indices.map { ChartPoint(pts[$0].x, floors.at($0) ?? zero) } : pts.map { ChartPoint($0.x, zero) })
+                defer { role = .none }
                 var a = Self.polyline(pts)
                 if kind.stacked {
                     // A stacked area fills the band between its line and the series' below (the port's own; DeckCraft
@@ -535,6 +546,8 @@ struct Layout {
                 let smooth = s.smooth && pts.count > 2
                 for j in pts.indices.dropFirst() {
                     part = .point(series: si, category: cats[j])
+                    role = .segment(index: j - 1, count: pts.count - 1)
+                    defer { role = .none }
                     var p = ChartPath()
                     p.move(to: pts[j - 1])
                     if smooth {
@@ -547,10 +560,12 @@ struct Layout {
                 }
             }
             if markers {
+                role = .marker
                 for (j, q) in pts.enumerated() {
                     part = .point(series: si, category: cats[j])
                     fill(.circle(q, 3.5), col)
                 }
+                role = .none
             }
             for (j, q) in pts.enumerated() {
                 part = .point(series: si, category: cats[j])
@@ -572,6 +587,9 @@ struct Layout {
         _ col: ChartColor, _ target: ChartPoint?, _ textCol: ChartColor
     ) {
         let o = c.labelOptions(s)
+        let was = role
+        role = .label
+        defer { role = was }
         if !o.legendKey && !o.callout {
             label(text, box, size, align, anchor, col, false)
             return

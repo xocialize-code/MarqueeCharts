@@ -71,8 +71,15 @@ struct BuildBar: View {
                     .frame(width: 130)
                     .accessibilityIdentifier("wipeDirection")
                 }
+                Picker("", selection: $model.build.easing) {
+                    ForEach(ChartEasing.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .labelsHidden()
+                .frame(width: 130)
+                .accessibilityIdentifier("buildEasing")
                 Toggle("Background first", isOn: $model.build.animateBackground)
                 Stepper("Step \(model.build.duration, specifier: "%.2f") s", value: $model.build.duration, in: 0.1 ... 5, step: 0.1)
+                Stepper("Overlap \(Int(model.build.overlap * 100))%", value: $model.build.overlap, in: 0 ... 0.9, step: 0.1)
                 Spacer()
             }
             HStack(spacing: 12) {

@@ -10,7 +10,8 @@ import UniformTypeIdentifiers
 public enum ChartRenderer {
     /// Draw `drawing` into `ctx`, whose user space must be the chart's (points, y down). `states` gives parts their
     /// state in a build; a part it leaves out is drawn whole.
-    public static func draw(_ drawing: ChartDrawing, in ctx: CGContext, theme: ChartTheme, states: [ChartPart: ChartPartState]? = nil) {
+    /// `outlines`: text drawn as filled glyph outlines (as a Lottie or an SVG render carries it) instead of with CoreText.
+    public static func draw(_ drawing: ChartDrawing, in ctx: CGContext, theme: ChartTheme, states: [ChartPart: ChartPartState]? = nil, outlines: Bool = false) {
         var bounds: [ChartPart: ChartRect] = [:]
         func boundsOf(_ p: ChartPart) -> ChartRect? {
             if let b = bounds[p] { return b }
@@ -18,7 +19,7 @@ public enum ChartRenderer {
             bounds[p] = b
             return b
         }
-        let fonts = FontCache(family: theme.fontFamily)
+        let fonts = FontCache(family: theme.fontFamily, outlines: outlines)
         var i = 0
         let marks = drawing.marks
         while i < marks.count {
@@ -27,24 +28,35 @@ public enum ChartRenderer {
             while j < marks.count && marks[j].part == part { j += 1 }
             let state = states?[part] ?? .shown
             defer { i = j }
-            if !state.visible || state.opacity <= 0.001 || state.reveal <= 0.0001 { continue }
+            if !state.visible || state.opacity <= 0.001 || state.reveal <= 0.0001 || (state.grow ?? 1) <= 0 { continue }
             ctx.saveGState()
-            if state.reveal < 0.9999, let b = boundsOf(part) {
-                let f = state.reveal.clamped(0, 1)
-                let r: ChartRect = switch state.direction {
-                case .fromBottom: ChartRect(b.x0, b.y1 - b.height * f, b.x1, b.y1)
-                case .fromTop: ChartRect(b.x0, b.y0, b.x1, b.y0 + b.height * f)
-                case .fromLeft: ChartRect(b.x0, b.y0, b.x0 + b.width * f, b.y1)
-                case .fromRight: ChartRect(b.x1 - b.width * f, b.y0, b.x1, b.y1)
-                }
-                ctx.clip(to: CGRect(x: r.x0, y: r.y0, width: r.width, height: r.height))
+            if state.offset != ChartPoint(0, 0) { ctx.translateBy(x: state.offset.x, y: state.offset.y) }
+            if let b = boundsOf(part), let r = state.visibleBox(b) {
+                ctx.clip(to: CGRect(x: r.x0, y: r.y0, width: Swift.max(r.width, 0), height: Swift.max(r.height, 0)))
             }
             let layered = state.opacity < 0.999
             if layered {
                 ctx.setAlpha(state.opacity.clamped(0, 1))
                 ctx.beginTransparencyLayer(auxiliaryInfo: nil)
             }
-            for m in marks[i ..< j] { draw(m, in: ctx, fonts: fonts) }
+            for m in marks[i ..< j] {
+                guard let g = state.grow else {
+                    draw(m, in: ctx, fonts: fonts)
+                    continue
+                }
+                // Growing in: each mark as far as it has grown, faded where it fades in.
+                guard let (gm, o) = m.grown(g, alongSeries: state.alongSeries) else { continue }
+                if o < 0.999 {
+                    ctx.saveGState()
+                    ctx.setAlpha(o)
+                    ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+                    draw(gm, in: ctx, fonts: fonts)
+                    ctx.endTransparencyLayer()
+                    ctx.restoreGState()
+                } else {
+                    draw(gm, in: ctx, fonts: fonts)
+                }
+            }
             if layered { ctx.endTransparencyLayer() }
             ctx.restoreGState()
         }
@@ -52,7 +64,8 @@ public enum ChartRenderer {
 
     /// `drawing` as an image at `scale` pixels per point, over `background` (nil: transparent).
     public static func image(
-        _ drawing: ChartDrawing, theme: ChartTheme, scale: Double = 2, background: ChartColor? = .white, states: [ChartPart: ChartPartState]? = nil
+        _ drawing: ChartDrawing, theme: ChartTheme, scale: Double = 2, background: ChartColor? = .white, states: [ChartPart: ChartPartState]? = nil,
+        outlines: Bool = false
     ) -> CGImage? {
         let scale = scale.isFinite ? scale.clamped(0.05, 16) : 1
         let w = Int((drawing.width * scale).rounded(.up))
@@ -67,7 +80,7 @@ public enum ChartRenderer {
         }
         ctx.translateBy(x: 0, y: CGFloat(h))
         ctx.scaleBy(x: scale, y: -scale)
-        draw(drawing, in: ctx, theme: theme, states: states)
+        draw(drawing, in: ctx, theme: theme, states: states, outlines: outlines)
         return ctx.makeImage()
     }
 
@@ -202,9 +215,13 @@ public enum ChartRenderer {
     /// Fonts by size and weight, for one drawing.
     final class FontCache {
         let family: String?
+        let outlines: Bool
         var fonts: [String: CTFont] = [:]
 
-        init(family: String?) { self.family = family }
+        init(family: String?, outlines: Bool = false) {
+            self.family = family
+            self.outlines = outlines
+        }
 
         func font(_ size: Double, bold: Bool) -> CTFont {
             let key = "\(size)-\(bold)"
@@ -218,8 +235,64 @@ public enum ChartRenderer {
         }
     }
 
+    /// A text mark's glyphs as outlines in the chart's space (y down), laid out exactly as `draw` draws them: what a
+    /// writer that can't carry fonts (Lottie, SVG) draws instead of the text.
+    public static func textOutlines(_ t: ChartText, fontFamily: String?) -> CGPath {
+        let out = CGMutablePath()
+        guard t.size.isFinite, t.size > 0 else { return out }
+        let font = FontCache(family: fontFamily).font(t.size, bold: t.bold)
+        let attrs: [CFString: Any] = [kCTFontAttributeName: font]
+        let lines = t.string.split(separator: "\n", omittingEmptySubsequences: false).map { s in
+            CTLineCreateWithAttributedString(CFAttributedStringCreate(nil, String(s) as CFString, attrs as CFDictionary))
+        }
+        let ascent = CTFontGetAscent(font)
+        let lineHeight = ascent + CTFontGetDescent(font) + CTFontGetLeading(font)
+        let blockH = lineHeight * CGFloat(lines.count)
+        let top: CGFloat = switch t.anchor {
+        case .top: t.box.y0
+        case .middle: t.box.center.y - blockH / 2
+        case .bottom: t.box.y1 - blockH
+        }
+        let m = t.transform
+        let place = CGAffineTransform(a: m.a, b: m.b, c: m.c, d: m.d, tx: m.tx, ty: m.ty)
+        for (k, line) in lines.enumerated() {
+            let w = CTLineGetTypographicBounds(line, nil, nil, nil)
+            let x: CGFloat = switch t.align {
+            case .left: t.box.x0
+            case .center: t.box.center.x - w / 2
+            case .right: t.box.x1 - w
+            }
+            let baseline = top + lineHeight * CGFloat(k) + ascent
+            for run in (CTLineGetGlyphRuns(line) as? [CTRun]) ?? [] {
+                let n = CTRunGetGlyphCount(run)
+                guard n > 0 else { continue }
+                // The run's own font: CoreText substitutes one for characters the chosen font lacks.
+                var runFont = font
+                if let v = (CTRunGetAttributes(run) as NSDictionary)[kCTFontAttributeName] as CFTypeRef?, CFGetTypeID(v) == CTFontGetTypeID() {
+                    runFont = unsafeBitCast(v, to: CTFont.self)
+                }
+                var glyphs = [CGGlyph](repeating: 0, count: n)
+                var positions = [CGPoint](repeating: .zero, count: n)
+                CTRunGetGlyphs(run, CFRange(location: 0, length: n), &glyphs)
+                CTRunGetPositions(run, CFRange(location: 0, length: n), &positions)
+                for i in 0 ..< n {
+                    // Glyph space is y up: flip it onto the baseline, then place it with the mark's transform.
+                    var g = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: x + positions[i].x, ty: baseline - positions[i].y).concatenating(place)
+                    if let path = CTFontCreatePathForGlyph(runFont, glyphs[i], &g) { out.addPath(path) }
+                }
+            }
+        }
+        return out
+    }
+
     static func text(_ t: ChartText, _ ctx: CGContext, _ fonts: FontCache) {
         guard t.size.isFinite, t.size > 0 else { return }
+        if fonts.outlines {
+            ctx.addPath(textOutlines(t, fontFamily: fonts.family))
+            ctx.setFillColor(cg(t.color))
+            ctx.fillPath()
+            return
+        }
         let font = fonts.font(t.size, bold: t.bold)
         let attrs: [CFString: Any] = [kCTFontAttributeName: font, kCTForegroundColorAttributeName: cg(t.color)]
         let lines = t.string.split(separator: "\n", omittingEmptySubsequences: false).map { s in

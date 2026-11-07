@@ -6,6 +6,7 @@
 //
 // - MarqueeCharts: the spec, the theme, number formats, axis scales, the layout and chart builds. Foundation only.
 // - MarqueeChartsGraphics: draws a chart into a CGContext or an image (CoreGraphics and CoreText).
+// - MarqueeChartsLottie: a chart and its build as a Lottie animation, text as glyph outlines.
 // - ChartLab: an app for trying charts: pick a type, edit its data, scrub its build, export frames and specs.
 import PackageDescription
 
@@ -15,12 +16,14 @@ let package = Package(
     products: [
         .library(name: "MarqueeCharts", targets: ["MarqueeCharts"]),
         .library(name: "MarqueeChartsGraphics", targets: ["MarqueeChartsGraphics"]),
+        .library(name: "MarqueeChartsLottie", targets: ["MarqueeChartsLottie"]),
         .executable(name: "ChartLab", targets: ["ChartLab"]),
     ],
     targets: [
         .target(name: "MarqueeCharts"),
         .target(name: "MarqueeChartsGraphics", dependencies: ["MarqueeCharts"]),
-        .executableTarget(name: "ChartLab", dependencies: ["MarqueeCharts", "MarqueeChartsGraphics"]),
-        .testTarget(name: "MarqueeChartsTests", dependencies: ["MarqueeCharts", "MarqueeChartsGraphics"]),
+        .target(name: "MarqueeChartsLottie", dependencies: ["MarqueeCharts", "MarqueeChartsGraphics"]),
+        .executableTarget(name: "ChartLab", dependencies: ["MarqueeCharts", "MarqueeChartsGraphics", "MarqueeChartsLottie"]),
+        .testTarget(name: "MarqueeChartsTests", dependencies: ["MarqueeCharts", "MarqueeChartsGraphics", "MarqueeChartsLottie"]),
     ]
 )

@@ -88,6 +88,24 @@ public struct ChartText: Hashable, Sendable {
 
 /// One mark of a chart.
 public struct ChartMark: Hashable, Sendable {
+    /// What a mark draws, so an effect can move it the way its kind of mark moves: a bar grows from its base, a slice
+    /// sweeps round, an area rises from its floor, a line segment draws on, a marker or a label appears.
+    public enum Role: Hashable, Sendable {
+        case none
+        /// A bar (its fill or its outline): it grows from `base`, a position along the value axis (x on a horizontal bar
+        /// chart, y otherwise).
+        case bar(horizontal: Bool, base: Double)
+        /// A pie or doughnut slice (fill or outline): from angle `start` by `sweep` radians, between radius `inner` and
+        /// `outer`.
+        case slice(center: ChartPoint, inner: Double, outer: Double, start: Double, sweep: Double)
+        /// Line segment `index` of `count` in its series (it ends at its point).
+        case segment(index: Int, count: Int)
+        /// An area: its top edge, left to right, and the floor under each point.
+        case area(top: [ChartPoint], floor: [ChartPoint])
+        case marker
+        case label
+    }
+
     public enum Kind: Hashable, Sendable {
         /// `path` filled with `paint`, laid out over `box` (a gradient's or a pattern's extent).
         case fill(ChartPath, ChartPaint, box: ChartRect)
@@ -97,10 +115,12 @@ public struct ChartMark: Hashable, Sendable {
 
     public var part: ChartPart
     public var kind: Kind
+    public var role: Role
 
-    public init(_ part: ChartPart, _ kind: Kind) {
+    public init(_ part: ChartPart, _ kind: Kind, role: Role = .none) {
         self.part = part
         self.kind = kind
+        self.role = role
     }
 
     /// The box the mark covers in the chart's space (a text's box as laid out, a stroke grown by half its width).

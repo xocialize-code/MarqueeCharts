@@ -2,6 +2,7 @@
 // export frames, parts and the spec. `swift run ChartLab`.
 import AppKit
 import MarqueeCharts
+import MarqueeChartsLottie
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -35,6 +36,7 @@ struct ChartLabApp: App {
                 Button("Frame as PNG…") { exportFrame(model) }.keyboardShortcut("e")
                 Button("Build Frames…") { exportFolder(model, frames: true) }
                 Button("Parts…") { exportFolder(model, frames: false) }
+                Button("Lottie Animation…") { exportLottie(model) }.keyboardShortcut("l", modifiers: [.command, .shift])
             }
         }
     }
@@ -103,4 +105,16 @@ final class LabDelegate: NSObject, NSApplicationDelegate {
     } catch {
         NSAlert(error: error).runModal()
     }
+}
+
+/// The chart and its build as a Lottie animation (`.json`), text as outlines, the finished chart held a second.
+@MainActor func exportLottie(_ model: LabModel) {
+    let panel = NSSavePanel()
+    panel.allowedContentTypes = [.json]
+    panel.nameFieldStringValue = "\(model.spec.kind.rawValue)-\(model.build.effect.rawValue).json"
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    let (w, h) = model.canvas.size
+    let doc = ChartDocument(chart: model.spec, theme: model.themeChoice.theme, width: w, height: h)
+    let data = ChartLottie.animation(doc, build: model.build, options: .init(fps: 30, scale: 2, background: model.themeChoice.background, hold: 1))
+    do { try data.write(to: url) } catch { NSAlert(error: error).runModal() }
 }
