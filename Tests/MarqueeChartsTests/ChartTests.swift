@@ -422,3 +422,33 @@ extension ChartMark {
         #expect(b.minY >= 0 && b.maxY <= 20)
     }
 }
+
+@Suite struct SVGTests {
+    /// Element names and attribute names in an SVG document.
+    final class Collect: NSObject, XMLParserDelegate {
+        var elements = Set<String>(), attributes = Set<String>()
+        func parser(_ p: XMLParser, didStartElement e: String, namespaceURI: String?, qualifiedName: String?, attributes a: [String: String]) {
+            elements.insert(e)
+            attributes.formUnion(a.keys)
+        }
+    }
+
+    @Test func fillOnlyPathsAndGradients() throws {
+        var c = ChartSpec.sample(.lineMarkers)
+        c.dataLabels = true
+        c.series[1].fill = .pattern(ChartPattern(preset: "dkDnDiag", foreground: .black, background: .white))
+        c.plotFill = .gradient(ChartGradient(stops: [.init(0, .white), .init(1, .rgb(200, 210, 230))]))
+        let d = ChartLayout.draw(c, theme: .standard, width: 480, height: 270)
+        let box = try #require(ChartSVG.ink(d.marks))
+        let svg = ChartSVG.document(d.marks, box: box, scale: 2, fontFamily: nil)
+        let parser = XMLParser(data: Data(svg.utf8))
+        let col = Collect()
+        parser.delegate = col
+        #expect(parser.parse(), "well-formed")
+        #expect(col.elements.isSubset(of: ["svg", "defs", "path", "linearGradient", "radialGradient", "stop"]), "\(col.elements)")
+        #expect(!col.attributes.contains("stroke") && !col.elements.contains("text"))
+        #expect(col.elements.contains("linearGradient"))
+        // Every path's data is absolute M L Q C Z.
+        #expect(svg.range(of: #"<path d="[^"]*[a-zA-Z&&[^MLQCZ]][^"]*""#, options: .regularExpression) == nil)
+    }
+}
