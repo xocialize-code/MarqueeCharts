@@ -102,6 +102,8 @@ public struct ChartMark: Hashable, Sendable {
         case segment(index: Int, count: Int)
         /// An area: its top edge, left to right, and the floor under each point.
         case area(top: [ChartPoint], floor: [ChartPoint])
+        /// A bubble (fill or outline): it grows from its centre.
+        case bubble(center: ChartPoint, radius: Double)
         case marker
         case label
     }

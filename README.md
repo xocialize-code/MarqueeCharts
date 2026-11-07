@@ -20,6 +20,7 @@ follow Excel's codes. See NOTICE.
 | Lines | Line, Line with Markers, Stacked, 100% Stacked |
 | Areas | Area, Stacked, 100% Stacked |
 | Circles | Pie, Doughnut |
+| XY | Scatter (markers, with straight or smooth lines where a series has a line), Bubble |
 
 Every type supports:
 
@@ -41,12 +42,15 @@ Every type supports:
 - **Colours:** vary colours by point, and monochrome palettes.
 - **Line styles:** smooth lines and markers.
 - **Bars and doughnuts:** gap width, overlap and hole size.
+- **Scatter and bubble:** a value x axis over every series' x values; bubble sizes by area or by width, and a bubble
+  scale (0–300 %).
 
 Builds play by series, by category or by element, with:
 - **Effects:** Appear, Fade, Wipe (four directions) or **Grow**:
   - bars rise from their base;
   - pie and doughnut slices sweep round;
   - areas rise from their floor;
+  - bubbles grow from their centre;
   - lines draw on (along the series when it comes in whole);
   - markers and data labels fade in as their point finishes.
 - **Timing:** easing (linear, ease in, out, in and out), and overlapping steps (stagger).

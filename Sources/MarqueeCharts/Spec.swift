@@ -11,6 +11,10 @@ public enum ChartKind: String, Codable, CaseIterable, Sendable {
     case line, lineMarkers, stackedLine, percentLine
     case area, stackedArea, percentArea
     case pie, doughnut
+    /// Points placed by an x value and a y value (`xValues` and `values`); with a line when a series has one.
+    case scatter
+    /// A scatter chart whose points are circles sized by `sizes`.
+    case bubble
 
     public var label: String {
         switch self {
@@ -29,6 +33,8 @@ public enum ChartKind: String, Codable, CaseIterable, Sendable {
         case .percentArea: "100% Stacked Area"
         case .pie: "Pie"
         case .doughnut: "Doughnut"
+        case .scatter: "Scatter"
+        case .bubble: "Bubble"
         }
     }
 
@@ -41,6 +47,8 @@ public enum ChartKind: String, Codable, CaseIterable, Sendable {
     public var percent: Bool { [.percentColumn, .percentBar, .percentLine, .percentArea].contains(self) }
     public var isArea: Bool { [.area, .stackedArea, .percentArea].contains(self) }
     public var isPie: Bool { self == .pie || self == .doughnut }
+    /// Both axes are value axes: points go where their x values say.
+    public var isXY: Bool { self == .scatter || self == .bubble }
 }
 
 /// A gradient: its stops and its shape.
@@ -164,7 +172,7 @@ public enum LabelPosition: String, Codable, CaseIterable, Sendable {
         switch kind {
         case .column, .bar: return [.center, .insideEnd, .insideBase, .outsideEnd]
         case .stackedColumn, .percentColumn, .stackedBar, .percentBar: return [.center, .insideEnd, .insideBase]
-        case .line, .lineMarkers, .stackedLine, .percentLine: return [.center, .left, .right, .above, .below]
+        case .line, .lineMarkers, .stackedLine, .percentLine, .scatter, .bubble: return [.center, .left, .right, .above, .below]
         case .pie: return [.center, .insideEnd, .outsideEnd, .bestFit]
         default: return []
         }
@@ -265,10 +273,16 @@ public struct ChartSeries: Hashable, Sendable, Codable {
     public var numberFormat: String?
     /// Its labels' options where they differ from the chart's.
     public var labelOptions: LabelOptions?
+    /// A scatter or bubble chart's x value of each point (nil: the point isn't drawn). With none at all, the points
+    /// are numbered 1, 2, 3…
+    public var xValues: [Double?]
+    /// A bubble chart's bubble sizes (nil, zero or negative: no bubble). With none at all, every bubble is the largest.
+    public var sizes: [Double?]
 
     public init(
         name: String, values: [Double?], fill: ChartFill? = nil, line: ChartLine? = nil, pointFills: [PointFill] = [], dataLabels: Bool? = nil,
-        smooth: Bool = false, marker: Bool = false, numberFormat: String? = nil, labelOptions: LabelOptions? = nil
+        smooth: Bool = false, marker: Bool = false, numberFormat: String? = nil, labelOptions: LabelOptions? = nil, xValues: [Double?] = [],
+        sizes: [Double?] = []
     ) {
         self.name = name
         self.values = values
@@ -280,6 +294,8 @@ public struct ChartSeries: Hashable, Sendable, Codable {
         self.marker = marker
         self.numberFormat = numberFormat
         self.labelOptions = labelOptions
+        self.xValues = xValues
+        self.sizes = sizes
     }
 
     public init(from decoder: Decoder) throws {
@@ -294,7 +310,9 @@ public struct ChartSeries: Hashable, Sendable, Codable {
             smooth: try c.decodeIfPresent(Bool.self, forKey: .smooth) ?? false,
             marker: try c.decodeIfPresent(Bool.self, forKey: .marker) ?? false,
             numberFormat: try c.decodeIfPresent(String.self, forKey: .numberFormat),
-            labelOptions: try c.decodeIfPresent(LabelOptions.self, forKey: .labelOptions)
+            labelOptions: try c.decodeIfPresent(LabelOptions.self, forKey: .labelOptions),
+            xValues: try c.decodeIfPresent([Double?].self, forKey: .xValues) ?? [],
+            sizes: try c.decodeIfPresent([Double?].self, forKey: .sizes) ?? []
         )
     }
 }
@@ -371,6 +389,10 @@ public struct ChartSpec: Hashable, Sendable, Codable {
     public var labelOptions: LabelOptions?
     /// Drawn flat, but laid out as a 3-D chart is (its data labels take no position).
     public var threeD: Bool
+    /// A bubble chart's bubbles as a percentage of their default size (0–300; nil: 100).
+    public var bubbleScale: Double?
+    /// A bubble's size sets its width, not its area.
+    public var bubbleSizeWidth: Bool
 
     public init(
         kind: ChartKind = .column, title: String? = nil, categories: [String] = [], series: [ChartSeries] = [], legend: LegendPosition? = .bottom,
@@ -378,7 +400,8 @@ public struct ChartSpec: Hashable, Sendable, Codable {
         minorGridlines: Bool = false, categoryAxisTitle: String? = nil, valueAxisTitle: String? = nil, monochrome: Bool = false,
         plotFill: ChartFill? = nil, chartFill: ChartFill? = nil, textColor: ChartColor? = nil, holeSize: Double = 0.5, gapWidth: Double = 2.19,
         overlap: Double = -0.27, varyColors: Bool = false, valueAxis: ValueAxis = ValueAxis(), categoriesReversed: Bool = false,
-        language: String? = nil, labelOptions: LabelOptions? = nil, threeD: Bool = false
+        language: String? = nil, labelOptions: LabelOptions? = nil, threeD: Bool = false, bubbleScale: Double? = nil,
+        bubbleSizeWidth: Bool = false
     ) {
         self.kind = kind
         self.title = title
@@ -406,6 +429,8 @@ public struct ChartSpec: Hashable, Sendable, Codable {
         self.language = language
         self.labelOptions = labelOptions
         self.threeD = threeD
+        self.bubbleScale = bubbleScale
+        self.bubbleSizeWidth = bubbleSizeWidth
     }
 
     public init(from decoder: Decoder) throws {
@@ -425,7 +450,8 @@ public struct ChartSpec: Hashable, Sendable, Codable {
             gapWidth: try v(.gapWidth, d.gapWidth), overlap: try v(.overlap, d.overlap), varyColors: try v(.varyColors, false),
             valueAxis: try v(.valueAxis, ValueAxis()), categoriesReversed: try v(.categoriesReversed, false),
             language: try c.decodeIfPresent(String.self, forKey: .language), labelOptions: try c.decodeIfPresent(LabelOptions.self, forKey: .labelOptions),
-            threeD: try v(.threeD, false)
+            threeD: try v(.threeD, false), bubbleScale: try c.decodeIfPresent(Double.self, forKey: .bubbleScale),
+            bubbleSizeWidth: try v(.bubbleSizeWidth, false)
         )
     }
 
@@ -444,7 +470,12 @@ public struct ChartSpec: Hashable, Sendable, Codable {
         let n = kind.isPie ? 1 : 3
         return ChartSpec(
             kind: kind, title: "Chart Title", categories: ["Q1", "Q2", "Q3", "Q4"],
-            series: (0 ..< n).map { s in ChartSeries(name: "Series \(s + 1)", values: data.map { $0.at(s) }) },
+            series: (0 ..< n).map { s in
+                ChartSeries(
+                    name: "Series \(s + 1)", values: data.map { $0.at(s) }, xValues: kind.isXY ? (1 ... 4).map { Double($0) } : [],
+                    sizes: kind == .bubble ? [3, 5, 2, 4].map { Double($0 + s) } : []
+                )
+            },
             varyColors: n == 1
         )
     }

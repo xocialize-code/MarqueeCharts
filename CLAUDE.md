@@ -17,13 +17,13 @@ The chart engine lifted out of a DeckCraftNative-based renderer (2026-11-07). Th
   CoreText.
 - **Parts:**
   - A mark belongs to the background or to one point.
-  - A bar, a slice and a marker each belong to their own point.
+  - A bar, a slice, a bubble and a marker each belong to their own point.
   - A line's segment belongs to the point it runs to.
   - An area belongs to its first point.
   - A data label belongs to its point.
   - Keep this true: hosts' chart builds depend on it.
 
-- **Roles:** every mark says what it draws (`ChartMark.Role`: bar, slice, segment, area, marker, label), and Grow
+- **Roles:** every mark says what it draws (`ChartMark.Role`: bar, slice, segment, area, bubble, marker, label), and Grow
   moves each by its role (`Grow.swift`). A new kind of mark needs a role, or it fades in under Grow.
 - **One geometry, every output:** the CoreGraphics renderer and the Lottie writer draw the same `ChartMark.grown`
   geometry. Check a change with ThorVG: a scratch package rendering both, with `ChartRenderer.image(..., outlines: true)`
@@ -51,6 +51,10 @@ it before a release.
 - **Stacked areas:** a stacked area fills the band between its line and the one below, opaque. DeckCraft fills every
   area down to the axis, so the areas overlap.
 - **Smooth lines in a build:** a smooth line keeps its curve while it builds point by point.
+- **Scatter lines:** a scatter series with a line of its own draws it, as PowerPoint does. DeckCraft draws a scatter
+  chart's markers alone.
+- **Bubble colours:** a bubble takes its point's own fill, and a single series that varies colours by point uses one
+  accent per bubble, as PowerPoint does. DeckCraft paints every bubble in its series' colour.
 
 ## Layout
 

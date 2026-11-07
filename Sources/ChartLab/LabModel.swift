@@ -114,13 +114,27 @@ final class LabModel {
         s.kind = k
         // A pie shows one series.
         if k.isPie && s.series.count > 1 { s.varyColors = true }
+        // Scatter and bubble points need x values (and bubbles sizes): the sample's, where a series has none.
+        if k.isXY {
+            let sample = ChartSpec.sample(k).series
+            for i in s.series.indices {
+                if s.series[i].xValues.isEmpty { s.series[i].xValues = s.series[i].values.indices.map { Double($0 + 1) } }
+                if k == .bubble && s.series[i].sizes.isEmpty {
+                    s.series[i].sizes = s.series[i].values.indices.map { j in sample.at(i % Swift.max(sample.count, 1))?.sizes.at(j % 4) ?? 1 }
+                }
+            }
+        }
         spec = s
     }
 
     func addCategory() {
         var s = spec
         s.categories.append("Q\(s.categories.count + 1)")
-        for i in s.series.indices { s.series[i].values.append(Double(Int.random(in: 10 ... 50)) / 10) }
+        for i in s.series.indices {
+            s.series[i].values.append(Double(Int.random(in: 10 ... 50)) / 10)
+            if s.kind.isXY { s.series[i].xValues.append(Double(s.categories.count)) }
+            if s.kind == .bubble { s.series[i].sizes.append(Double(Int.random(in: 1 ... 9))) }
+        }
         spec = s
     }
 
@@ -143,17 +157,39 @@ final class LabModel {
         spec.series.removeLast()
     }
 
-    func value(_ s: Int, _ i: Int) -> String {
-        guard let v = spec.series.at(s)?.values.at(i) ?? nil else { return "" }
+    /// A column of a series in the data grid: its values, or a scatter or bubble chart's x values and sizes.
+    enum Field: String, CaseIterable {
+        case x = "X", value = "Y", size = "Size"
+
+        var keyPath: WritableKeyPath<ChartSeries, [Double?]> {
+            switch self {
+            case .x: \.xValues
+            case .value: \.values
+            case .size: \.sizes
+            }
+        }
+    }
+
+    /// The columns each series has in the grid.
+    var fields: [Field] {
+        switch spec.kind {
+        case .scatter: [.x, .value]
+        case .bubble: [.x, .value, .size]
+        default: [.value]
+        }
+    }
+
+    func value(_ s: Int, _ i: Int, _ f: Field = .value) -> String {
+        guard let v = spec.series.at(s)?[keyPath: f.keyPath].at(i) ?? nil else { return "" }
         return NumberFormat.format("General", v, nil)
     }
 
-    func setValue(_ s: Int, _ i: Int, _ text: String) {
+    func setValue(_ s: Int, _ i: Int, _ text: String, _ f: Field = .value) {
         guard spec.series.indices.contains(s) else { return }
         var sp = spec
-        while sp.series[s].values.count <= i { sp.series[s].values.append(nil) }
+        while sp.series[s][keyPath: f.keyPath].count <= i { sp.series[s][keyPath: f.keyPath].append(nil) }
         let t = text.trimmingCharacters(in: .whitespaces)
-        sp.series[s].values[i] = t.isEmpty ? nil : Double(t.replacingOccurrences(of: ",", with: "."))
+        sp.series[s][keyPath: f.keyPath][i] = t.isEmpty ? nil : Double(t.replacingOccurrences(of: ",", with: "."))
         spec = sp
     }
 

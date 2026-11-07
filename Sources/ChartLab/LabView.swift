@@ -222,9 +222,23 @@ struct DataGrid: View {
                     GridRow {
                         Text("").frame(width: 120)
                         ForEach(model.spec.series.indices, id: \.self) { s in
-                            TextField("Series", text: Binding(get: { model.spec.series.at(s)?.name ?? "" }, set: { model.spec.series[s].name = $0 }))
-                                .frame(width: 110)
-                                .fontWeight(.semibold)
+                            ForEach(model.fields, id: \.self) { f in
+                                if f == model.fields.first {
+                                    TextField("Series", text: Binding(get: { model.spec.series.at(s)?.name ?? "" }, set: { model.spec.series[s].name = $0 }))
+                                        .frame(width: 110)
+                                        .fontWeight(.semibold)
+                                } else {
+                                    Text("").frame(width: 110)
+                                }
+                            }
+                        }
+                    }
+                    if model.fields.count > 1 {
+                        GridRow {
+                            Text("").frame(width: 120)
+                            ForEach(model.spec.series.indices, id: \.self) { _ in
+                                ForEach(model.fields, id: \.self) { f in Text(f.rawValue).foregroundStyle(.secondary).frame(width: 110) }
+                            }
                         }
                     }
                     ForEach(model.spec.categories.indices, id: \.self) { i in
@@ -232,9 +246,11 @@ struct DataGrid: View {
                             TextField("Category", text: Binding(get: { model.spec.categories.at(i) ?? "" }, set: { model.spec.categories[i] = $0 }))
                                 .frame(width: 120)
                             ForEach(model.spec.series.indices, id: \.self) { s in
-                                ValueCell(text: model.value(s, i)) { model.setValue(s, i, $0) }
-                                    .frame(width: 110)
-                                    .accessibilityIdentifier("value-\(s)-\(i)")
+                                ForEach(model.fields, id: \.self) { f in
+                                    ValueCell(text: model.value(s, i, f)) { model.setValue(s, i, $0, f) }
+                                        .frame(width: 110)
+                                        .accessibilityIdentifier(f == .value ? "value-\(s)-\(i)" : "\(f.rawValue.lowercased())-\(s)-\(i)")
+                                }
                             }
                         }
                     }

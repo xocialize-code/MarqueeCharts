@@ -49,6 +49,28 @@ extension ChartSpec {
         return (s.0, s.1, s.2)
     }
 
+    /// A scatter or bubble chart's x axis (min, max, major unit): one scale over every series' x values, from zero when
+    /// they are all positive; nil for other charts and when there are no x values. `pad`: room for the largest bubble,
+    /// as a fraction of the axis added past the data.
+    public func xAxisScale(_ maxIntervals: Int, pad: Double = 0) -> (min: Double, max: Double, step: Double)? {
+        guard kind.isXY else { return nil }
+        var range: (Double, Double)?
+        for s in series {
+            for v in s.xValues.compactMap({ $0 }) where v.isFinite {
+                range = range.map { ($0.0.rustMin(v), $0.1.rustMax(v)) } ?? (v, v)
+            }
+        }
+        guard let (lo, hi) = range else { return nil }
+        let grow = pad > 0 && pad < 0.45 ? (hi - lo.rustMin(0)) * pad / (1 - 2 * pad) : 0
+        let s = MarqueeCharts.axisScale(lo.rustMin(0), hi + grow, nil, nil, nil, maxIntervals, false)
+        return (s.0, s.1, s.2)
+    }
+
+    /// An x axis tick's label: whole numbers as they are, others to one decimal.
+    static func xAxisLabel(_ v: Double) -> String {
+        Swift.abs(v - v.rounded()) < 1e-9 ? String(Int64(rustCast: v.rounded())) : rustFixed(v, places: 1)
+    }
+
     /// A value axis label in the axis' number format and the chart's language.
     public func axisLabel(_ v: Double) -> String {
         let code = valueAxis.format

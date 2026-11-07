@@ -405,9 +405,20 @@ struct Layout {
         // unless the axis is reversed.
         let backwards = horiz != c.categoriesReversed
         let slot = { (i: Int) -> Double in backwards ? Double(Swift.max(ncat - (i + 1), 0)) : Double(i) }
+        // Scatter and bubble charts have a value x axis: one scale over every series' x values, its tick labels in place
+        // of the category names.
+        let bubbles = BubbleScale(c, plot)
+        let xscale = horiz ? nil : c.xAxisScale(Int(rustCast: (plot.width / (base * 2.5)).rounded(.down).clamped(2, 12)), pad: bubbles.padding(plot.width))
+        let toX = { (v: Double) -> Double? in xscale.map { plot.x0 + (v - $0.min) / Self.positiveSpan($0.max - $0.min) * plot.width } }
+        if let sc = xscale {
+            for v in Self.axisTicks((sc.min, sc.max, sc.step)) {
+                let pos = plot.x0 + (v - sc.min) / Self.positiveSpan(sc.max - sc.min) * plot.width
+                label(ChartSpec.xAxisLabel(v), ChartRect(pos - 30, plot.y1 + 3, pos + 30, plot.y1 + base * 1.6), base, .center, .top, textCol, false)
+            }
+        }
         // Category labels: on two lines when they don't fit their band.
         let wraps = !horiz && c.categories.contains { Double($0.unicodeScalars.count) * base * 0.5 > band }
-        for (i, name) in c.categories.enumerated() {
+        for (i, name) in c.categories.enumerated() where xscale == nil {
             let mid = horiz ? plot.y0 + band * (slot(i) + 0.5) : plot.x0 + band * (slot(i) + 0.5)
             if horiz {
                 label(name, ChartRect(area.x0, mid - base, plot.x0 - base * 0.4, mid + base), base, .right, .middle, textCol, false)
@@ -420,7 +431,7 @@ struct Layout {
         if c.kind.isBarLike {
             drawBars(plot, band, slot, ncat, horiz, toV, base, textCol)
         } else {
-            drawLines(plot, band, slot, ncat, toV, zero, base, textCol)
+            drawLines(plot, band, slot, ncat, toV, zero, base, textCol, toX, bubbles)
         }
         // The axis line.
         part = .background
@@ -489,9 +500,10 @@ struct Layout {
 
     mutating func drawLines(
         _ plot: ChartRect, _ band: Double, _ slot: (Int) -> Double, _ ncat: Int, _ toV: (Double) -> Double, _ zero: Double, _ base: Double,
-        _ textCol: ChartColor
+        _ textCol: ChartColor, _ toX: (Double) -> Double?, _ bubbles: BubbleScale
     ) {
         let kind = c.kind
+        let xy = kind.isXY
         var acc = [Double](repeating: 0, count: ncat)
         // A 100 % line or area plots each value as its share of the category's total.
         let totals: [Double] = kind.percent
@@ -517,7 +529,18 @@ struct Layout {
                     v = baseV + v0
                     floor = baseV
                 }
-                pts.append(ChartPoint(plot.x0 + band * (slot(i) + 0.5), toV(v)))
+                var x = plot.x0 + band * (slot(i) + 0.5)
+                if xy {
+                    if let xv = s.xValues.at(i) ?? nil, xv.isFinite, let px = toX(xv) {
+                        x = px
+                    } else if s.xValues.allSatisfy({ $0 == nil }) {
+                        // No x values at all: the points are numbered 1, 2, 3…
+                        x = toX(Double(i) + 1) ?? x
+                    } else {
+                        continue
+                    }
+                }
+                pts.append(ChartPoint(x, toV(v)))
                 cats.append(i)
                 floors.append(toV(floor))
             }
@@ -539,8 +562,8 @@ struct Layout {
                     a.close()
                 }
                 fill(a, col, kind.stacked ? 1 : 0.85)
-            } else {
-                // A line's segment comes with the point it runs to. Joined with round caps, the segments draw as the
+            } else if !xy || (kind == .scatter && s.line?.color != nil) {
+                // A line's segment comes with the point it runs to (a scatter series' only when it has a line). Joined with round caps, the segments draw as the
                 // whole line does with round joins.
                 let lw = (s.line?.width.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 2.25).clamped(0.25, 20)
                 let smooth = s.smooth && pts.count > 2
@@ -559,7 +582,18 @@ struct Layout {
                     stroke(p, ChartStroke(col, width: lw, join: .round, cap: .round))
                 }
             }
-            if markers {
+            if kind == .bubble {
+                for (j, q) in pts.enumerated() {
+                    part = .point(series: si, category: cats[j])
+                    guard let r = bubbles.radius(s, cats[j]) else { continue }
+                    let box = ChartRect(q.x - r, q.y - r, q.x + r, q.y + r)
+                    role = .bubble(center: q, radius: r)
+                    fillWith(barPaint(si, cats[j], s), box, .circle(q, r))
+                    if let (oc, ow) = barOutline(s), ow > 0 { stroke(.circle(q, r), ChartStroke(oc, width: ow)) }
+                    role = .none
+                }
+            }
+            if markers || kind == .scatter {
                 role = .marker
                 for (j, q) in pts.enumerated() {
                     part = .point(series: si, category: cats[j])
@@ -571,7 +605,7 @@ struct Layout {
                 part = .point(series: si, category: cats[j])
                 // An area's points stay unlabelled, as PowerPoint places an area's labels without a position.
                 if !areaKind, c.showsDataLabels(s), let v = s.values.at(cats[j]) ?? nil {
-                    let gap = markers || s.marker ? 3.5 : 0
+                    let gap = kind == .bubble ? bubbles.radius(s, cats[j]) ?? 0 : markers || s.marker || kind == .scatter ? 3.5 : 0
                     pointLabel(s, si, cats[j], c.labelText(s, cats[j], v), q, gap, base * 0.9, textCol)
                 }
             }
@@ -692,4 +726,40 @@ struct Layout {
         default: dataLabel(s, si, i, text, ChartRect(q.x + g, q.y - th, q.x + g + w, q.y + th), .left, .middle, size, col, q, col)
         }
     }
+}
+
+
+/// A bubble chart's sizing (ECMA-376 §21.2.2.22 `c:bubbleScale`, §21.2.2.200 `c:sizeRepresents`): the largest size over
+/// the chart's series gets a bubble a quarter as wide as the plot's shorter side at 100 %, as PowerPoint draws it;
+/// others scale by area (or by width). Zero, negative and missing sizes draw nothing; a series with no sizes at all
+/// draws every bubble at the largest size. From DeckCraftNative's DCRender/Chart.swift (its own addition there).
+struct BubbleScale {
+    let maxSize: Double
+    let maxRadius: Double
+    let byWidth: Bool
+
+    init(_ c: ChartSpec, _ plot: ChartRect) {
+        var top = 0.0
+        if c.kind == .bubble {
+            for s in c.series {
+                if s.sizes.isEmpty { top = top.rustMax(1) }
+                for v in s.sizes.compactMap({ $0 }) where v.isFinite && v > 0 { top = top.rustMax(v) }
+            }
+        }
+        maxSize = top
+        let scale = (c.bubbleScale.flatMap { $0.isFinite ? $0 : nil } ?? 100).clamped(0, 300) / 100
+        maxRadius = top > 0 ? plot.width.rustMin(plot.height).rustMax(0) * 0.125 * scale : 0
+        byWidth = c.bubbleSizeWidth
+    }
+
+    /// Point `i`'s radius, or nil when it draws no bubble.
+    func radius(_ s: ChartSeries, _ i: Int) -> Double? {
+        let v: Double? = s.sizes.isEmpty ? 1 : (s.sizes.at(i) ?? nil)
+        guard let v, v.isFinite, v > 0, maxSize > 0, maxRadius > 0 else { return nil }
+        let f = (v / maxSize).rustMin(1)
+        return maxRadius * (byWidth ? f : f.squareRoot())
+    }
+
+    /// The x axis' room for the largest bubble: its radius as a fraction of `width`.
+    func padding(_ width: Double) -> Double { width > 0 && maxRadius > 0 ? maxRadius / width : 0 }
 }
