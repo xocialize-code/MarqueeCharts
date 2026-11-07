@@ -1,0 +1,12 @@
+MarqueeCharts
+Copyright (c) 2026 Dustin Nielson.
+Licensed under the MIT License or the Apache License, Version 2.0, at your option
+(LICENSE-MIT, LICENSE-APACHE).
+
+The chart model, layout and number formats come from DeckCraftNative
+(https://github.com/xocialize/DeckCraftNative), Copyright (c) 2026 Dustin Nielson, a native port of
+DeckCraft (https://github.com/storytold/deckcraft), Copyright (c) 2026 ArtCraft Team and the DeckCraft
+contributors, both used under the MIT License or the Apache License, Version 2.0. DeckCraft's licence
+texts and NOTICE are in LICENSES/deckcraft/; every file that comes from it names its source and
+licence in its header. MarqueeCharts is not made, sponsored or endorsed by the ArtCraft Team, and uses
+none of the ArtCraft marks.
