@@ -23,6 +23,16 @@ The chart engine lifted out of a DeckCraftNative-based renderer (2026-11-07). Th
   - A data label belongs to its point.
   - Keep this true: hosts' chart builds depend on it.
 
+- **Roles:** every mark says what it draws (`ChartMark.Role`: bar, slice, segment, area, marker, label), and Grow
+  moves each by its role (`Grow.swift`). A new kind of mark needs a role, or it fades in under Grow.
+- **One geometry, every output:** the CoreGraphics renderer and the Lottie writer draw the same `ChartMark.grown`
+  geometry. Check a change with ThorVG: a scratch package rendering both, with `ChartRenderer.image(..., outlines: true)`
+  so text is compared like for like (50–60 dB expected).
+- **Lottie order:** Lottie draws a composition's first layer, and a layer's first shape, on top. The writer reverses
+  drawing order at both levels.
+- **Text spacing is PowerPoint's:** lines are 1.2 × size, the baseline where the font's ascent and descent split it.
+  That's what keeps text where a PowerPoint-faithful host puts it.
+
 ## Hosts
 
 A DeckCraftNative-based host draws the charts this package takes:
