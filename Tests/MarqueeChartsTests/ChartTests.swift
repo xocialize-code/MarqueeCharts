@@ -57,13 +57,14 @@ import MarqueeChartsLottie
 
     @Test func everyPointIsAPart() {
         for kind in ChartKind.allCases {
-            let c = ChartSpec.sample(kind)
-            let d = ChartLayout.draw(c, theme: .standard, width: 480, height: 270)
+            let d = ChartLayout.draw(ChartSpec.sample(kind), theme: .standard, width: 480, height: 270)
+            // A histogram's points are its bins, a box chart's its groups.
+            let c = kind.isBinned ? ChartSpec.sample(kind).histogramView() : kind == .boxWhisker ? ChartSpec.sample(kind).boxView().0 : ChartSpec.sample(kind)
             var want: Set<ChartPart> = [.background]
             for s in c.series.indices {
                 for i in 0 ..< c.pointCount where c.series[s].values.at(i) != nil {
                     // A line's first point has no segment (no marker, no label): nothing to draw.
-                    if [.line, .stackedLine, .percentLine].contains(kind) && i == 0 { continue }
+                    if [.line, .stackedLine, .percentLine].contains(c.seriesKind(c.series[s])) && i == 0 { continue }
                     if kind.isArea && i > 0 { continue }
                     // A radar's polygon comes with its first point (its markers, here none, with theirs); a stock chart's
                     // marks with each category's last series.

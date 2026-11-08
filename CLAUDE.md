@@ -26,6 +26,10 @@ The chart engine lifted out of a DeckCraftNative-based renderer (2026-11-07). Th
   - A data table is background.
   - A radar's polygon belongs to its series' first point (its markers and labels to theirs); a stock chart's marks to
     each category's last series.
+  - A histogram's points are its bins (a Pareto's line its second series), a box chart's its groups: builds step over
+    them (`ChartSpec.buildCounts`), and a host's build steps must count the same way.
+  - A treemap tile or sunburst segment belongs to its category; a group's tile, banner and ring to its first category.
+  - A funnel's category names are background; its bars and values belong to their points.
   - Keep this true: hosts' chart builds depend on it.
 
 - **Roles:** every mark says what it draws (`ChartMark.Role`: bar, slice, segment, area, bubble, radial, marker, label), and Grow
@@ -69,6 +73,7 @@ it before a release.
 | Layout (from DCRender `Chart.swift`) | `Sources/MarqueeCharts/Layout.swift` |
 | Marks, parts, drawings | `Sources/MarqueeCharts/Drawing.swift` |
 | Combo types, trendlines, error bars, data table options | `Sources/MarqueeCharts/Options.swift` |
+| Waterfall bars, histogram bins, box statistics, category trees (from DCModel `Chart.swift`) | `Sources/MarqueeCharts/Office.swift` |
 | Trendline fits (from DCModel `Trendline.swift`) | `Sources/MarqueeCharts/Trendline.swift` |
 | Builds and part states | `Sources/MarqueeCharts/Build.swift` |
 | Axis scale and labels | `Sources/MarqueeCharts/Scale.swift` |

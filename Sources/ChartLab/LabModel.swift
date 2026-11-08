@@ -110,6 +110,13 @@ final class LabModel {
     // MARK: Data
 
     func setKind(_ k: ChartKind) {
+        // Types whose data is shaped differently (observations, a hierarchy, prices, a running total) start from their
+        // sample, as do the others when coming from one of them.
+        let own: Set<ChartKind> = [.stock, .waterfall, .funnel, .treemap, .sunburst, .boxWhisker, .histogram, .pareto]
+        if own.contains(k) || own.contains(spec.kind) {
+            spec = ChartSpec.sample(k)
+            return
+        }
         var s = spec
         s.kind = k
         // A pie shows one series.

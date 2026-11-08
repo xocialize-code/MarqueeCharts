@@ -184,8 +184,7 @@ public struct ChartBuild: Hashable, Sendable, Codable {
     /// category or point (points series by series for a by-element-in-series build, category by category for the
     /// other). As one object when the chart has no data or would need more than `maxSteps`.
     public func steps(_ chart: ChartSpec) -> [ChartBuildStep] {
-        let ns = chart.series.count
-        let nc = chart.pointCount
+        let (ns, nc) = chart.buildCounts
         let data: Int
         switch kind {
         case .asOneObject: data = 0
@@ -260,5 +259,19 @@ public struct ChartBuild: Hashable, Sendable, Codable {
             }
         }
         return out
+    }
+}
+
+extension ChartSpec {
+    /// The series and points a build steps over: as drawn, so a histogram's are its bins (a Pareto's its bins and its
+    /// cumulative line) and a box and whisker chart's its groups.
+    public var buildCounts: (series: Int, points: Int) {
+        switch kind {
+        case .histogram, .pareto:
+            let v = histogramView()
+            return (v.series.count, v.pointCount)
+        case .boxWhisker: return (series.count, boxGroups().groups.count)
+        default: return (series.count, pointCount)
+        }
     }
 }

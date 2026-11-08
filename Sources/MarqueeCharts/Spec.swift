@@ -24,6 +24,20 @@ public enum ChartKind: String, Codable, CaseIterable, Sendable {
     /// High-low lines per category, with up/down bars (open to close) or a dash at the close: series in the order
     /// high, low, close, or open, high, low, close.
     case stock
+    /// Bars floating from the running total: increases, decreases, and totals (`subtotals`) standing on zero.
+    case waterfall
+    /// Bars centred on one axis, as wide as their value.
+    case funnel
+    /// Tiles sized by value, nested by `categoryLevels`.
+    case treemap
+    /// Rings sized by value, the outer levels of `categoryLevels` inside.
+    case sunburst
+    /// Boxes and whiskers over each category group's points (quartiles by Excel's exclusive or inclusive method).
+    case boxWhisker
+    /// Columns counting the first series' observations in bins (`binSize`, `binCount`, else Scott's rule).
+    case histogram
+    /// A histogram sorted by count, with the cumulative percentage as a line on a 0–100 % axis.
+    case pareto
 
     public var label: String {
         switch self {
@@ -48,10 +62,19 @@ public enum ChartKind: String, Codable, CaseIterable, Sendable {
         case .radar: "Radar"
         case .filledRadar: "Filled Radar"
         case .stock: "Stock"
+        case .waterfall: "Waterfall"
+        case .funnel: "Funnel"
+        case .treemap: "Treemap"
+        case .sunburst: "Sunburst"
+        case .boxWhisker: "Box and Whisker"
+        case .histogram: "Histogram"
+        case .pareto: "Pareto"
         }
     }
 
-    public var isBarLike: Bool { [.column, .stackedColumn, .percentColumn, .bar, .stackedBar, .percentBar].contains(self) }
+    public var isBarLike: Bool { [.column, .stackedColumn, .percentColumn, .bar, .stackedBar, .percentBar, .waterfall, .histogram, .pareto].contains(self) }
+    /// Office 2016's own layouts, drawn without axes: funnel, treemap and sunburst.
+    public var isAxisless: Bool { [.funnel, .treemap, .sunburst].contains(self) }
     /// Bars run across, the categories down the left.
     public var horizontal: Bool { [.bar, .stackedBar, .percentBar].contains(self) }
     public var stacked: Bool {
@@ -61,6 +84,8 @@ public enum ChartKind: String, Codable, CaseIterable, Sendable {
     /// A filled area: area charts and the filled radar.
     public var isArea: Bool { [.area, .stackedArea, .percentArea, .filledRadar].contains(self) }
     public var isRadar: Bool { self == .radar || self == .filledRadar }
+    /// Drawn by their bins, as a column chart (histogram) or a combo (Pareto).
+    public var isBinned: Bool { self == .histogram || self == .pareto }
     public var isPie: Bool { self == .pie || self == .doughnut }
     /// Both axes are value axes: points go where their x values say.
     public var isXY: Bool { self == .scatter || self == .bubble }
@@ -431,6 +456,15 @@ public struct ChartSpec: Hashable, Sendable, Codable {
     public var upDownBars: Bool
     /// A data table under the plot, in place of the category labels.
     public var dataTable: ChartDataTableStyle?
+    /// A waterfall's total points: each stands on zero and sets the running total.
+    public var subtotals: [Int]
+    /// A treemap's or sunburst's outer category levels, outermost first, one label per category (blank: as above).
+    public var categoryLevels: [[String]]
+    /// A box and whisker chart's quartiles by QUARTILE.INC (else QUARTILE.EXC).
+    public var inclusiveQuartiles: Bool
+    /// A histogram's number of bins, or the width of one (the width wins).
+    public var binCount: Int?
+    public var binSize: Double?
 
     public init(
         kind: ChartKind = .column, title: String? = nil, categories: [String] = [], series: [ChartSeries] = [], legend: LegendPosition? = .bottom,
@@ -439,7 +473,8 @@ public struct ChartSpec: Hashable, Sendable, Codable {
         plotFill: ChartFill? = nil, chartFill: ChartFill? = nil, textColor: ChartColor? = nil, holeSize: Double = 0.5, gapWidth: Double = 2.19,
         overlap: Double = -0.27, varyColors: Bool = false, valueAxis: ValueAxis = ValueAxis(), categoriesReversed: Bool = false,
         language: String? = nil, labelOptions: LabelOptions? = nil, threeD: Bool = false, bubbleScale: Double? = nil,
-        bubbleSizeWidth: Bool = false, secondaryAxis: ValueAxis = ValueAxis(), upDownBars: Bool = false, dataTable: ChartDataTableStyle? = nil
+        bubbleSizeWidth: Bool = false, secondaryAxis: ValueAxis = ValueAxis(), upDownBars: Bool = false, dataTable: ChartDataTableStyle? = nil,
+        subtotals: [Int] = [], categoryLevels: [[String]] = [], inclusiveQuartiles: Bool = false, binCount: Int? = nil, binSize: Double? = nil
     ) {
         self.kind = kind
         self.title = title
@@ -472,6 +507,11 @@ public struct ChartSpec: Hashable, Sendable, Codable {
         self.secondaryAxis = secondaryAxis
         self.upDownBars = upDownBars
         self.dataTable = dataTable
+        self.subtotals = subtotals
+        self.categoryLevels = categoryLevels
+        self.inclusiveQuartiles = inclusiveQuartiles
+        self.binCount = binCount
+        self.binSize = binSize
     }
 
     public init(from decoder: Decoder) throws {
@@ -493,7 +533,9 @@ public struct ChartSpec: Hashable, Sendable, Codable {
             language: try c.decodeIfPresent(String.self, forKey: .language), labelOptions: try c.decodeIfPresent(LabelOptions.self, forKey: .labelOptions),
             threeD: try v(.threeD, false), bubbleScale: try c.decodeIfPresent(Double.self, forKey: .bubbleScale),
             bubbleSizeWidth: try v(.bubbleSizeWidth, false), secondaryAxis: try v(.secondaryAxis, ValueAxis()), upDownBars: try v(.upDownBars, false),
-            dataTable: try c.decodeIfPresent(ChartDataTableStyle.self, forKey: .dataTable)
+            dataTable: try c.decodeIfPresent(ChartDataTableStyle.self, forKey: .dataTable), subtotals: try v(.subtotals, []),
+            categoryLevels: try v(.categoryLevels, []), inclusiveQuartiles: try v(.inclusiveQuartiles, false),
+            binCount: try c.decodeIfPresent(Int.self, forKey: .binCount), binSize: try c.decodeIfPresent(Double.self, forKey: .binSize)
         )
     }
 
@@ -508,6 +550,32 @@ public struct ChartSpec: Hashable, Sendable, Codable {
 
     /// The data a new chart of `kind` starts with (DeckCraft's sample numbers).
     public static func sample(_ kind: ChartKind) -> ChartSpec {
+        switch kind {
+        case .treemap, .sunburst:
+            // DeckCraft's: months in quarters.
+            let v = [4.2, 2.8, 3.6, 4.7, 2.6, 4.1, 1.9, 3.0]
+            return ChartSpec(kind: kind, title: "Chart Title", categories: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug"],
+                             series: [ChartSeries(name: "Series 1", values: v.map { $0 })], varyColors: true,
+                             categoryLevels: [["Q1", "Q1", "Q1", "Q2", "Q2", "Q2", "Q3", "Q3"]])
+        case .histogram, .pareto, .boxWhisker:
+            // DeckCraft's observations; a box chart's in two groups, two series.
+            let obs: [Double] = [12, 15, 17, 18, 21, 22, 22, 24, 25, 27, 28, 31, 33, 36, 41, 48]
+            let n = kind == .boxWhisker ? 2 : 1
+            return ChartSpec(kind: kind, title: "Chart Title", categories: kind == .boxWhisker ? obs.indices.map { $0 % 2 == 0 ? "Group A" : "Group B" } : [],
+                             series: (0 ..< n).map { s in ChartSeries(name: "Series \(s + 1)", values: obs.map { $0 + Double(s) * 6 }) },
+                             legend: kind == .boxWhisker ? .bottom : nil)
+        case .waterfall, .funnel:
+            let v = [4.2, 2.8, 3.6, 4.7]
+            var c = ChartSpec(kind: kind, title: "Chart Title", categories: ["Q1", "Q2", "Q3", "Q4"], series: [ChartSeries(name: "Series 1", values: v.map { $0 })],
+                              varyColors: true)
+            if kind == .waterfall {
+                c.series[0].values = [4.2, -1.4, 2.1, 4.9]
+                c.subtotals = [3]
+                c.varyColors = false
+            }
+            return c
+        default: break
+        }
         if kind == .stock {
             // DeckCraft's high-low-close sample.
             let hlc: [(String, [Double])] = [

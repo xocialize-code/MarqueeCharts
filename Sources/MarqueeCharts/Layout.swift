@@ -7,7 +7,19 @@ import Foundation
 public enum ChartLayout {
     /// Lay `chart` out at `width` × `height` points in `theme`.
     public static func draw(_ chart: ChartSpec, theme: ChartTheme, width: Double, height: Double) -> ChartDrawing {
-        var l = Layout(c: chart, theme: theme, w: width.isFinite ? Swift.max(width, 0) : 0, h: height.isFinite ? Swift.max(height, 0) : 0)
+        // A histogram is drawn as the column chart of its bins (a Pareto as a combo), a box and whisker chart as a column
+        // chart's frame with its boxes in place of the columns.
+        var spec = chart
+        var boxes: [[BoxStats?]]?
+        if spec.kind.isBinned {
+            spec = spec.histogramView()
+        } else if spec.kind == .boxWhisker {
+            let (frame, stats) = spec.boxView()
+            spec = frame
+            boxes = stats
+        }
+        var l = Layout(c: spec, theme: theme, w: width.isFinite ? Swift.max(width, 0) : 0, h: height.isFinite ? Swift.max(height, 0) : 0)
+        l.boxes = boxes
         l.run()
         return ChartDrawing(width: l.w, height: l.h, marks: l.marks)
     }
@@ -34,6 +46,8 @@ struct Layout {
     /// The part the next marks belong to, and what they draw.
     var part: ChartPart = .background
     var role: ChartMark.Role = .none
+    /// A box and whisker chart's summaries, per series, per group.
+    var boxes: [[BoxStats?]]?
 
     init(c: ChartSpec, theme: ChartTheme, w: Double, h: Double) {
         self.c = c
@@ -98,7 +112,7 @@ struct Layout {
     /// point.
     func barPaint(_ si: Int, _ pi: Int, _ s: ChartSeries) -> BarPaint {
         if let pf = s.pointFills.first(where: { $0.index == pi }) { return paintOf(pf.fill, seriesFill(si, s)) }
-        if c.varyColors && c.series.count == 1 && s.fill == nil { return .color(seriesColor(pi)) }
+        if c.varyColors && c.series.count == 1 && s.fill == nil && c.kind != .waterfall { return .color(seriesColor(pi)) }
         return paintOf(s.fill, seriesColor(si))
     }
 
@@ -225,7 +239,14 @@ struct Layout {
         let pie = c.kind.isPie
         // Each legend entry: its name, its key's paint and the key's outline.
         let legendItems: [(String, BarPaint, (ChartColor, Double)?)]
-        if pie {
+        if c.kind == .waterfall {
+            legendItems = ["Increase", "Decrease", "Total"].enumerated().map { ($1, .color(seriesColor($0)), nil) }
+        } else if c.kind == .treemap || c.kind == .sunburst {
+            // A hierarchy's legend names its top-level groups.
+            legendItems = c.categoryTree().prefix(1000).enumerated().map { ($1.name, .color(seriesColor($0)), nil) }
+        } else if c.kind == .funnel {
+            legendItems = []
+        } else if pie {
             legendItems = c.categories.enumerated().map { ($1, .color(seriesColor($0)), nil) }
         } else {
             legendItems = c.series.enumerated().map { i, s in
@@ -265,6 +286,8 @@ struct Layout {
             drawPie(area, base, textCol)
         } else if c.kind.isRadar {
             drawRadar(area, base, textCol)
+        } else if c.kind.isAxisless {
+            drawOffice(area, base, textCol)
         } else {
             drawAxes(area, base, textCol, gridCol)
         }
@@ -389,7 +412,8 @@ struct Layout {
             Double(ticks.map { c.axisLabel($0, secondary: secondary).unicodeScalars.count }.max() ?? 1) * base * 0.55 + base * 0.6
         }
         // A data table under the plot takes the category labels' place, its series names left of the plot.
-        let table = horiz ? nil : c.dataTable.flatMap { t in c.takesDataTable ? DataTableLayout(c, t, base) : nil }
+        // (Not on a box and whisker chart, though its frame is a column chart's: PowerPoint doesn't offer one.)
+        let table = horiz || boxes != nil ? nil : c.dataTable.flatMap { t in c.takesDataTable ? DataTableLayout(c, t, base) : nil }
         let gutter0 = horiz ? base * 4.5 : c.valueAxis.hidden ? base * 0.5 : Self.clampSoft(labelW(primaryTicks, false), base * 1.5, area.width * 0.3)
         let gutter = table.map { gutter0.rustMax($0.nameWidth.rustMin(area.width * 0.4)) } ?? gutter0
         let gutterR = second.flatMap { c.secondaryAxis.hidden ? nil : $0 }
@@ -488,6 +512,11 @@ struct Layout {
                 }
             }
         }
+        if let b = boxes {
+            drawBoxes(b, plot, band, horiz, toV)
+            part = .background
+            return
+        }
         let zero = log != nil ? toV(pow(logBase, min)) : toV(Self.clampSoft(0, min, max))
         var errors: [ErrorMark] = []
         drawBars(plot, band, slot, ncat, horiz, toV, toAxis, base, textCol, &errors)
@@ -545,6 +574,8 @@ struct Layout {
         let group = bar + step * (n - 1)
         // Error bars need each series' mean and spread: worked out once, not per point.
         let stats = bars.map { $0.element.errorBars == nil ? SeriesStats() : SeriesStats.of($0.element.values) }
+        let waterfall = c.kind == .waterfall
+        let wf = waterfall ? c.waterfallBars() : []
         for i in 0 ..< ncat {
             var posAcc = 0.0
             var negAcc = 0.0
@@ -557,7 +588,9 @@ struct Layout {
                 let v = ((s.values.at(i) ?? nil) ?? 0) / total
                 let start = band * slot(i) + (band - group) / 2 + (stacked ? 0 : step * Double(bi))
                 let (a, b): (Double, Double)
-                if stacked {
+                if waterfall {
+                    (a, b) = wf.at(i) ?? (0, 0)
+                } else if stacked {
                     if v >= 0 {
                         (a, b) = (posAcc, posAcc + v)
                         posAcc += v
@@ -571,12 +604,21 @@ struct Layout {
                 let r = (horiz
                     ? ChartRect(toV(a), plot.y0 + start, toV(b), plot.y0 + start + bar)
                     : ChartRect(plot.x0 + start, toAxis(sec, b), plot.x0 + start + bar, toAxis(sec, a))).abs
-                // A bar grows from the end nearer its stack's base (zero, or the bar under it).
-                let baseValue = stacked ? (v >= 0 ? a : b) : 0
+                // A bar grows from the end nearer its stack's base (zero, or the bar under it); a waterfall's from the
+                // running total it starts at.
+                let baseValue = waterfall ? a : stacked ? (v >= 0 ? a : b) : 0
                 role = .bar(horizontal: horiz, base: horiz ? toV(baseValue) : toAxis(sec, baseValue))
-                fillWith(barPaint(si, i, s), r)
-                if let (oc, ow) = barOutline(s), ow > 0 { stroke(.rect(r), ChartStroke(oc, width: ow)) }
+                // A waterfall colours increases, decreases and totals, and joins each bar's end to the next bar's start.
+                fillWith(waterfall ? .color(seriesColor(c.subtotals.contains(i) ? 2 : b < a ? 1 : 0)) : barPaint(si, i, s), r)
+                if !waterfall, let (oc, ow) = barOutline(s), ow > 0 { stroke(.rect(r), ChartStroke(oc, width: ow)) }
                 role = .none
+                if waterfall && i + 1 < ncat && !horiz {
+                    let y = toV(b)
+                    var j = ChartPath()
+                    j.move(to: ChartPoint(r.x1, y))
+                    j.line(to: ChartPoint(r.x1 + (band - bar), y))
+                    stroke(j, ChartStroke(.rgb(0xA6, 0xA6, 0xA6), width: 0.75))
+                }
                 if let e = s.errorBars, let st = stats.at(bi), let (lo, hi) = e.range(st, i, v >= 0 ? b : a) {
                     let (p0, p1) = horiz ? (toV(lo), toV(hi)) : (toAxis(sec, lo), toAxis(sec, hi))
                     errors.append(ErrorMark(part: part, mid: horiz ? r.center.y : r.center.x, from: p0, to: p1, cap: bar.rustMin(base * 0.8) * 0.5, endCap: e.endCap))
@@ -735,6 +777,279 @@ struct Layout {
             }
         }
         part = .background
+    }
+
+    // MARK: Box and whisker
+
+    /// Boxes from the first to the third quartile with the median line and a mean marker, whiskers to the furthest
+    /// points within 1.5 IQR, and outliers as dots; series side by side in each group's band. Each box is its series'
+    /// point in its group.
+    mutating func drawBoxes(_ b: [[BoxStats?]], _ plot: ChartRect, _ band: Double, _ horiz: Bool, _ toV: (Double) -> Double) {
+        let ns = Swift.max(b.count, 1)
+        let group = band / (1 + c.gapWidth.clamped(0, 5))
+        let w = group / Double(ns)
+        let line = ChartColor.rgb(0x40, 0x40, 0x40)
+        for (si, per) in b.enumerated() {
+            let fillCol = seriesColor(si)
+            for (gi, st) in per.enumerated() {
+                guard let st else { continue }
+                part = .point(series: si, category: gi)
+                let c0 = (horiz ? plot.y0 : plot.x0) + band * Double(gi) + (band - group) / 2 + w * Double(si)
+                let (a, z) = (c0 + w * 0.1, c0 + w * 0.9)
+                let mid = (a + z) / 2
+                // Along the category axis `a…z`, along the value axis `toV`.
+                func rect(_ p: Double, _ q: Double, _ u: Double, _ v: Double) -> ChartRect {
+                    horiz ? ChartRect(u.rustMin(v), p, u.rustMax(v), q) : ChartRect(p, u.rustMin(v), q, u.rustMax(v))
+                }
+                func pt(_ along: Double, _ val: Double) -> ChartPoint { horiz ? ChartPoint(val, along) : ChartPoint(along, val) }
+                let bx = rect(a, z, toV(st.q1), toV(st.q3))
+                fill(.rect(bx), fillCol)
+                var p = ChartPath()
+                // Whiskers with caps, and the median.
+                for (from, to) in [(st.q3, st.high), (st.q1, st.low)] {
+                    p.move(to: pt(mid, toV(from)))
+                    p.line(to: pt(mid, toV(to)))
+                    p.move(to: pt(mid - w * 0.2, toV(to)))
+                    p.line(to: pt(mid + w * 0.2, toV(to)))
+                }
+                p.move(to: pt(a, toV(st.median)))
+                p.line(to: pt(z, toV(st.median)))
+                let ink = ChartStroke(line, width: 1.25)
+                stroke(p, ink)
+                stroke(.rect(bx), ink)
+                // The mean as an x.
+                let (mx, r) = (pt(mid, toV(st.mean)), (w * 0.08).clamped(1.5, 5))
+                var x = ChartPath()
+                x.move(to: ChartPoint(mx.x - r, mx.y - r))
+                x.line(to: ChartPoint(mx.x + r, mx.y + r))
+                x.move(to: ChartPoint(mx.x - r, mx.y + r))
+                x.line(to: ChartPoint(mx.x + r, mx.y - r))
+                stroke(x, ink)
+                for o in st.outliers.prefix(10_000) {
+                    let q = pt(mid, toV(o))
+                    fill(.circle(q, r), fillCol)
+                    stroke(.circle(q, r), ink)
+                }
+            }
+        }
+    }
+
+    // MARK: Funnel, treemap and sunburst
+
+    /// Office 2016's charts without axes, inside `area`. From DeckCraftNative's DCRender/ChartEx.swift, a port of
+    /// deckcraft crates/render/src/chartex.rs (MIT OR Apache-2.0).
+    mutating func drawOffice(_ area: ChartRect, _ base: Double, _ textCol: ChartColor) {
+        guard let s = c.series.first else { return }
+        let vals = s.values.prefix(100_000).map { ($0 ?? 0).isFinite ? ($0 ?? 0).rustMax(0) : 0 }
+        if vals.allSatisfy({ $0 <= 0 }) { return }
+        let labels = c.showsDataLabels(s) || c.kind == .funnel
+        let spec = c
+        let (th, mono) = (theme, c.monochrome)
+        let valueLabel: ((Double) -> String)? = labels ? { v in spec.dataLabel(s, v) } : nil
+        switch c.kind {
+        case .funnel: drawFunnel(area, base, textCol, vals, s)
+        case .treemap: placeTiles(c.categoryTree(), area, base, { th.seriesColor($0, monochrome: mono) }, 0, valueLabel)
+        default: drawSunburst(area, base)
+        }
+        part = .background
+    }
+
+    /// Bars centred on one axis, as wide as their value, widest first as given: category labels on the left, values
+    /// inside. Each bar grows out from the middle.
+    mutating func drawFunnel(_ area: ChartRect, _ base: Double, _ textCol: ChartColor, _ vals: [Double], _ s: ChartSeries) {
+        let n = Swift.max(vals.count, 1)
+        let gutter = Double(c.categories.prefix(n).map(\.unicodeScalars.count).max() ?? 0) * base * 0.55 + base
+        let plot = ChartRect(area.x0 + gutter.rustMin(area.width * 0.4), area.y0, area.x1, area.y1)
+        let max = vals.reduce(0.0) { $0.rustMax($1) }.rustMax(1e-9)
+        let band = plot.height / Double(n)
+        let cx = plot.center.x
+        for (i, v) in vals.enumerated() {
+            let w = v / max * plot.width
+            let y = plot.y0 + band * Double(i)
+            let r = ChartRect(cx - w / 2, y + band * 0.05, cx + w / 2, y + band * 0.95)
+            part = .background
+            if let name = c.categories.at(i) {
+                label(name, ChartRect(area.x0, y, plot.x0 - base * 0.4, y + band), base, .right, .middle, textCol, false)
+            }
+            part = .point(series: 0, category: i)
+            role = .bar(horizontal: true, base: cx)
+            fill(.rect(r), seriesColor(0))
+            role = .none
+            label(c.dataLabel(s, v), ChartRect(cx - 60, y, cx + 60, y + band), base, .center, .middle, .white, false)
+        }
+    }
+
+    /// Squarified treemap (Bruls, Huizing, van Wijk): rows of tiles laid along the short side, each row kept while it
+    /// improves the worst aspect ratio.
+    static func squarify(_ vals: [Double], _ r: ChartRect) -> [ChartRect] {
+        let total = vals.reduce(0, +)
+        var out = [ChartRect](repeating: ChartRect(0, 0, 0, 0), count: vals.count)
+        let area = r.width * r.height
+        if !(total > 0) || !total.isFinite || !(area > 0) { return out }
+        let scale = area / total
+        // Largest first, ties in order.
+        let order = vals.indices.filter { vals[$0] > 0 }.enumerated().sorted { a, b in
+            let (x, y) = (vals[a.element], vals[b.element])
+            return x != y ? x > y : a.offset < b.offset
+        }.map(\.element)
+        var free = r
+        var i = 0
+        while i < order.count {
+            let short = free.width.rustMin(free.height)
+            if !short.isFinite || short <= 1e-9 { break }
+            let s2 = short * short
+            let a0 = vals[order[i]] * scale
+            var (curSum, curMax, curMin) = (a0, a0, a0)
+            var curWorst = ((s2 * curMax) / (curSum * curSum)).rustMax((curSum * curSum) / (s2 * curMin))
+            var end = i + 1
+            while end < order.count {
+                let nextA = vals[order[end]] * scale
+                let candSum = curSum + nextA
+                let candMax = curMax.rustMax(nextA)
+                let candMin = curMin.rustMin(nextA)
+                let candWorst = ((s2 * candMax) / (candSum * candSum)).rustMax((candSum * candSum) / (s2 * candMin))
+                if candWorst.isFinite && candWorst <= curWorst {
+                    (curSum, curMax, curMin, curWorst) = (candSum, candMax, candMin, candWorst)
+                    end += 1
+                } else {
+                    break
+                }
+            }
+            let thick = curSum / short
+            if !thick.isFinite || thick <= 0 { break }
+            var at = 0.0
+            for k in order[i ..< end] {
+                let len = vals[k] * scale / thick
+                out[k] = free.width >= free.height
+                    ? ChartRect(free.x0, free.y0 + at, free.x0 + thick, free.y0 + at + len)
+                    : ChartRect(free.x0 + at, free.y0, free.x0 + at + len, free.y0 + thick)
+                at += len
+            }
+            free = free.width >= free.height
+                ? ChartRect(free.x0 + thick, free.y0, free.x1, free.y1)
+                : ChartRect(free.x0, free.y0 + thick, free.x1, free.y1)
+            i = end
+        }
+        return out
+    }
+
+    /// `col` mixed toward white by `k` (0…0.8): deeper hierarchy levels are lighter.
+    static func lighten(_ col: ChartColor, _ k: Double) -> ChartColor {
+        let k = k.clamped(0, 0.8)
+        func f(_ v: UInt8) -> UInt8 { UInt8(rustCast: (Double(v) + (255 - Double(v)) * k).rounded()) }
+        return .rgb(f(col.r), f(col.g), f(col.b))
+    }
+
+    /// A treemap's tiles: `nodes` squarified in `r`. A leaf is a tile with its name (and value); a group is a tile with
+    /// its name in a banner along the top and its children squarified below it, lighter. A tile grows out from its
+    /// centre; a group comes with its first category.
+    mutating func placeTiles(
+        _ nodes: [ChartTreeNode], _ r: ChartRect, _ base: Double, _ col: (Int) -> ChartColor, _ depth: Int, _ valueLabel: ((Double) -> String)?
+    ) {
+        if depth > Self.maxTreeDepth { return }
+        let flat = c.categoryLevels.isEmpty
+        for (i, (n, t)) in zip(nodes, Self.squarify(nodes.map(\.value), r)).enumerated() where t.width * t.height > 0 {
+            let fillCol = col(i)
+            part = .point(series: 0, category: n.firstLeaf ?? 0)
+            if n.children.isEmpty {
+                role = .radial(center: t.center)
+                fill(.rect(t), fillCol)
+                stroke(.rect(t), ChartStroke(.white, width: flat ? 1.5 : 1))
+                role = .none
+                var text = n.name
+                if let f = valueLabel { text = "\(text)\n\(f(n.value))" }
+                let inner = t.inset(by: base * 0.3)
+                if inner.width > base && inner.height > base { label(text, inner, flat ? base : base * 0.9, .left, .top, .white, false) }
+                continue
+            }
+            // A group: its banner, then its children below it.
+            let banner = (base * 1.5).rustMin(t.height * 0.3)
+            role = .radial(center: t.center)
+            fill(.rect(t), fillCol)
+            role = .none
+            if t.width > base * 2 && banner > base * 0.8 {
+                label(n.name, ChartRect(t.x0 + base * 0.3, t.y0, t.x1 - base * 0.3, t.y0 + banner), base, .left, .middle, .white, true)
+            }
+            let inner = ChartRect(t.x0 + 1, t.y0 + banner, t.x1 - 1, t.y1 - 1)
+            let k = Self.lighten(fillCol, 0.12 * Double(depth + 1))
+            placeTiles(n.children, inner, base, { _ in k }, depth + 1, valueLabel)
+            part = .point(series: 0, category: n.firstLeaf ?? 0)
+            role = .radial(center: t.center)
+            stroke(.rect(t), ChartStroke(.white, width: 2))
+            role = .none
+        }
+    }
+
+    static let maxTreeDepth = 16
+
+    /// A closed ring segment from angle `a` sweeping `sweep`, between radii `ri` and `ro`.
+    static func ringSegment(_ cen: ChartPoint, _ ri: Double, _ ro: Double, _ a: Double, _ sweep: Double) -> ChartPath {
+        var p = ChartPath()
+        p.move(to: ChartPoint(cen.x + ri * cos(a), cen.y + ri * sin(a)))
+        p.line(to: ChartPoint(cen.x + ro * cos(a), cen.y + ro * sin(a)))
+        p.arc(center: cen, radius: ro, start: a, sweep: sweep)
+        let a1 = a + sweep
+        p.line(to: ChartPoint(cen.x + ri * cos(a1), cen.y + ri * sin(a1)))
+        p.arc(center: cen, radius: ri, start: a1, sweep: -sweep)
+        p.close()
+        return p
+    }
+
+    /// A sunburst: without outer levels one ring with the centre open; with them, the top level as the inner ring and
+    /// each deeper level in the next ring out, within its parent's angle, coloured by top-level group and lighter
+    /// further out. A segment sweeps round as it grows and comes with its first category.
+    mutating func drawSunburst(_ area: ChartRect, _ base: Double) {
+        let tree = c.categoryTree()
+        let flat = c.categoryLevels.isEmpty
+        func depth(_ n: [ChartTreeNode], _ d: Int) -> Int { d > Self.maxTreeDepth ? d : n.map { 1 + depth($0.children, d + 1) }.max() ?? 0 }
+        let levels = Swift.max(depth(tree, 0), 1)
+        let total = tree.reduce(0.0) { $0 + $1.value }
+        if !(total > 0) { return }
+        let r = area.width.rustMin(area.height) / 2 * 0.95
+        if !(r > 0) { return }
+        let hole = r * (flat ? 0.35 : 0.2)
+        let ring = (r - hole) / Double(levels)
+        let cen = area.center
+        func ringOf(_ l: inout Layout, _ nodes: [ChartTreeNode], _ a0: Double, _ span: Double, _ d: Int, _ col: (Int) -> ChartColor) {
+            if d > Self.maxTreeDepth { return }
+            let sum = nodes.reduce(0.0) { $0 + $1.value }
+            if sum <= 0 { return }
+            let (ri, ro) = (hole + ring * Double(d), hole + ring * Double(d + 1))
+            var a = a0
+            for (i, n) in nodes.enumerated() {
+                let sweep = n.value / sum * span
+                if !(sweep > 0) { continue }
+                let fillCol = col(i)
+                let p = Self.ringSegment(cen, ri, ro, a, sweep)
+                l.part = .point(series: 0, category: n.firstLeaf ?? 0)
+                l.role = .slice(center: cen, inner: ri, outer: ro, start: a, sweep: sweep)
+                l.fill(p, fillCol)
+                l.stroke(p, ChartStroke(.white, width: 1.5))
+                l.role = .none
+                let mid = a + sweep / 2
+                let rr = (ri + ro) / 2
+                if flat {
+                    if sweep > 0.25, !n.name.isEmpty {
+                        let lp = ChartPoint(cen.x + rr * cos(mid), cen.y + rr * sin(mid))
+                        l.label(n.name, ChartRect(lp.x - 50, lp.y - base, lp.x + 50, lp.y + base), base, .center, .middle, .white, false)
+                    }
+                } else if sweep * rr > base * 2.5 && !n.name.isEmpty {
+                    // Labels where the segment has room for them.
+                    let lp = ChartPoint(cen.x + rr * cos(mid), cen.y + rr * sin(mid))
+                    let half = (ring * 0.48).rustMax(base)
+                    l.label(n.name, ChartRect(lp.x - half, lp.y - base, lp.x + half, lp.y + base), base * 0.9, .center, .middle, .white, false)
+                }
+                if !n.children.isEmpty {
+                    let k = Self.lighten(fillCol, 0.15)
+                    ringOf(&l, n.children, a, sweep, d + 1) { _ in k }
+                }
+                a += sweep
+            }
+        }
+        let (th, mono) = (theme, c.monochrome)
+        var l = self
+        ringOf(&l, tree, -Double.pi / 2, 2 * Double.pi, 0) { th.seriesColor($0, monochrome: mono) }
+        self = l
     }
 
     // MARK: Stock

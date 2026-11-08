@@ -20,6 +20,10 @@ extension ChartSpec {
     /// running sums from zero, 100 % series as 0–1, and the trendlines of series that aren't stacked. (0, 0) without
     /// finite values; nil when no series uses the axis.
     func plottedExtent(secondary: Bool = false) -> (Double, Double)? {
+        if kind == .waterfall {
+            if secondary { return nil }
+            return waterfallBars().reduce((0.0, 0.0)) { r, b in (r.0.rustMin(b.0.rustMin(b.1)), r.1.rustMax(b.0.rustMax(b.1))) }
+        }
         let ser = series.filter { onSecondary($0) == secondary }
         if ser.isEmpty { return !secondary && kind != .combo ? (0.0, 0.0) : nil }
         var ext = (Double.infinity, -Double.infinity)
