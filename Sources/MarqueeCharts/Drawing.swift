@@ -104,6 +104,8 @@ public struct ChartMark: Hashable, Sendable {
         case area(top: [ChartPoint], floor: [ChartPoint])
         /// A bubble (fill or outline): it grows from its centre.
         case bubble(center: ChartPoint, radius: Double)
+        /// A radar's polygon (fill or outline): it grows out from the chart's centre.
+        case radial(center: ChartPoint)
         case marker
         case label
     }

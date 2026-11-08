@@ -80,7 +80,7 @@ extension ChartMark {
             for q in floor.reversed() { path.line(to: q) }
             path.close()
             m.kind = m.kind.mapPath { _ in path }
-        case .bubble(let c, _):
+        case .bubble(let c, _), .radial(let c):
             // From its centre: its radius grows with the step, so its area comes in as the square.
             let t = ChartTransform(p, 0, 0, p, c.x * (1 - p), c.y * (1 - p))
             m.kind = m.kind.mapPath { $0.transformed(t) }

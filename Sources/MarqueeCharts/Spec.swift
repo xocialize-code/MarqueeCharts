@@ -17,6 +17,13 @@ public enum ChartKind: String, Codable, CaseIterable, Sendable {
     case bubble
     /// Each series in a type of its own (`ChartSeries.kind`), some on a secondary value axis.
     case combo
+    /// One spoke per category, each series a closed polygon (markers where a series has them).
+    case radar
+    /// A radar whose polygons are filled.
+    case filledRadar
+    /// High-low lines per category, with up/down bars (open to close) or a dash at the close: series in the order
+    /// high, low, close, or open, high, low, close.
+    case stock
 
     public var label: String {
         switch self {
@@ -38,6 +45,9 @@ public enum ChartKind: String, Codable, CaseIterable, Sendable {
         case .scatter: "Scatter"
         case .bubble: "Bubble"
         case .combo: "Combo"
+        case .radar: "Radar"
+        case .filledRadar: "Filled Radar"
+        case .stock: "Stock"
         }
     }
 
@@ -48,7 +58,9 @@ public enum ChartKind: String, Codable, CaseIterable, Sendable {
         [.stackedColumn, .stackedBar, .stackedLine, .stackedArea, .percentColumn, .percentBar, .percentLine, .percentArea].contains(self)
     }
     public var percent: Bool { [.percentColumn, .percentBar, .percentLine, .percentArea].contains(self) }
-    public var isArea: Bool { [.area, .stackedArea, .percentArea].contains(self) }
+    /// A filled area: area charts and the filled radar.
+    public var isArea: Bool { [.area, .stackedArea, .percentArea, .filledRadar].contains(self) }
+    public var isRadar: Bool { self == .radar || self == .filledRadar }
     public var isPie: Bool { self == .pie || self == .doughnut }
     /// Both axes are value axes: points go where their x values say.
     public var isXY: Bool { self == .scatter || self == .bubble }
@@ -175,7 +187,7 @@ public enum LabelPosition: String, Codable, CaseIterable, Sendable {
         switch kind {
         case .column, .bar: return [.center, .insideEnd, .insideBase, .outsideEnd]
         case .stackedColumn, .percentColumn, .stackedBar, .percentBar: return [.center, .insideEnd, .insideBase]
-        case .line, .lineMarkers, .stackedLine, .percentLine, .scatter, .bubble: return [.center, .left, .right, .above, .below]
+        case .line, .lineMarkers, .stackedLine, .percentLine, .scatter, .bubble, .stock: return [.center, .left, .right, .above, .below]
         case .pie: return [.center, .insideEnd, .outsideEnd, .bestFit]
         default: return []
         }
@@ -496,6 +508,14 @@ public struct ChartSpec: Hashable, Sendable, Codable {
 
     /// The data a new chart of `kind` starts with (DeckCraft's sample numbers).
     public static func sample(_ kind: ChartKind) -> ChartSpec {
+        if kind == .stock {
+            // DeckCraft's high-low-close sample.
+            let hlc: [(String, [Double])] = [
+                ("High", [55, 57, 57, 58, 58]), ("Low", [11, 12, 13, 11, 25]), ("Close", [25, 38, 50, 35, 43]),
+            ]
+            return ChartSpec(kind: .stock, title: "Chart Title", categories: ["Mon", "Tue", "Wed", "Thu", "Fri"],
+                             series: hlc.map { ChartSeries(name: $0.0, values: $0.1.map { $0 }) })
+        }
         let data: [[Double]] = [[4.2, 2.6, 2.1], [2.8, 4.1, 2.4], [3.6, 1.9, 3.3], [4.7, 3.0, 5.1]]
         let n = kind.isPie ? 1 : 3
         return ChartSpec(

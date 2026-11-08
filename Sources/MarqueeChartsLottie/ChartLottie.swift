@@ -215,7 +215,7 @@ struct Writer {
     func shapes(_ still0: ChartPath, _ m: ChartMark, _ growth: [ChartPartState]?) -> [[String: Any]] {
         guard let g = growth else { return bezier(still0).map { ["ty": "sh", "ks": still($0)] } }
         switch m.role {
-        case .bar, .area, .slice, .bubble: break
+        case .bar, .area, .slice, .bubble, .radial: break
         default: return bezier(still0).map { ["ty": "sh", "ks": still($0)] }
         }
         func pathOf(_ mark: ChartMark?) -> ChartPath {

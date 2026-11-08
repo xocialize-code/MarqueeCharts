@@ -24,9 +24,11 @@ The chart engine lifted out of a DeckCraftNative-based renderer (2026-11-07). Th
   - An error bar belongs to its point; an up/down bar to its category's last series.
   - A trendline and its caption belong to their series' last point.
   - A data table is background.
+  - A radar's polygon belongs to its series' first point (its markers and labels to theirs); a stock chart's marks to
+    each category's last series.
   - Keep this true: hosts' chart builds depend on it.
 
-- **Roles:** every mark says what it draws (`ChartMark.Role`: bar, slice, segment, area, bubble, marker, label), and Grow
+- **Roles:** every mark says what it draws (`ChartMark.Role`: bar, slice, segment, area, bubble, radial, marker, label), and Grow
   moves each by its role (`Grow.swift`). A new kind of mark needs a role, or it fades in under Grow.
 - **One geometry, every output:** the CoreGraphics renderer and the Lottie writer draw the same `ChartMark.grown`
   geometry. Check a change with ThorVG: a scratch package rendering both, with `ChartRenderer.image(..., outlines: true)`

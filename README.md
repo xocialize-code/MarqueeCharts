@@ -21,6 +21,8 @@ follow Excel's codes. See NOTICE.
 | Areas | Area, Stacked, 100% Stacked |
 | Circles | Pie, Doughnut |
 | XY | Scatter (markers, with straight or smooth lines where a series has a line), Bubble |
+| Radar | Radar (markers where a series has them), Filled Radar |
+| Stock | High-Low-Close, Open-High-Low-Close (up/down bars) |
 | Combo | Each series a column, bar, line or area type of its own, on the primary or a secondary value axis |
 
 Every type supports:
@@ -59,6 +61,7 @@ Builds play by series, by category or by element, with:
   - pie and doughnut slices sweep round;
   - areas rise from their floor;
   - bubbles grow from their centre;
+  - radar polygons grow out from the chart's centre;
   - lines draw on (along the series when it comes in whole);
   - markers and data labels fade in as their point finishes.
 - **Timing:** easing (linear, ease in, out, in and out), and overlapping steps (stagger).

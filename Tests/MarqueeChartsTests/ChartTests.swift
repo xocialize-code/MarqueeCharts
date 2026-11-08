@@ -65,6 +65,10 @@ import MarqueeChartsLottie
                     // A line's first point has no segment (no marker, no label): nothing to draw.
                     if [.line, .stackedLine, .percentLine].contains(kind) && i == 0 { continue }
                     if kind.isArea && i > 0 { continue }
+                    // A radar's polygon comes with its first point (its markers, here none, with theirs); a stock chart's
+                    // marks with each category's last series.
+                    if kind == .radar && i > 0 { continue }
+                    if kind == .stock && s != c.series.count - 1 { continue }
                     want.insert(.point(series: s, category: i))
                 }
             }

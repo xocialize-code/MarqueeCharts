@@ -263,6 +263,8 @@ struct Layout {
         }
         if pie {
             drawPie(area, base, textCol)
+        } else if c.kind.isRadar {
+            drawRadar(area, base, textCol)
         } else {
             drawAxes(area, base, textCol, gridCol)
         }
@@ -489,6 +491,9 @@ struct Layout {
         let zero = log != nil ? toV(pow(logBase, min)) : toV(Self.clampSoft(0, min, max))
         var errors: [ErrorMark] = []
         drawBars(plot, band, slot, ncat, horiz, toV, toAxis, base, textCol, &errors)
+        if c.kind == .stock {
+            for i in 0 ..< ncat { drawStockMarks(plot.x0 + band * (slot(i) + 0.5), band, i) { toAxis(false, $0) } }
+        }
         drawUpDownBars(plot, band, slot, ncat, toAxis)
         drawLines(plot, band, slot, ncat, toAxis, zero, base, textCol, toX, bubbles, &errors)
         // A category position (0-based, fractional) as a slot, the way `slot` places the bars.
@@ -621,7 +626,8 @@ struct Layout {
         }
         for (si, s) in c.series.enumerated() {
             let kind = c.seriesKind(s)
-            if kind.isBarLike { continue }
+            // A stock chart's series are drawn as its high-low lines and up/down bars.
+            if kind.isBarLike || kind == .stock { continue }
             let xy = kind.isXY
             let sec = c.onSecondary(s)
             let markers = kind == .lineMarkers
@@ -725,6 +731,144 @@ struct Layout {
                 if !areaKind, c.showsDataLabels(s), let v = s.values.at(cats[j]) ?? nil {
                     let gap = kind == .bubble ? bubbles.radius(s, cats[j]) ?? 0 : markers || s.marker || kind == .scatter ? 3.5 : 0
                     pointLabel(s, si, cats[j], c.labelText(s, cats[j], v), q, gap, base * 0.9, textCol)
+                }
+            }
+        }
+        part = .background
+    }
+
+    // MARK: Stock
+
+    /// A stock chart's marks at category `i`: the high-low line, then the up/down bar between the first (open) and last
+    /// (close) series, else a dash at the close. They come with the category's last series.
+    mutating func drawStockMarks(_ x: Double, _ band: Double, _ i: Int, _ toY: (Double) -> Double) {
+        let vals = c.series.compactMap { $0.values.at(i) ?? nil }
+        if vals.count < 2 { return }
+        part = .point(series: c.series.count - 1, category: i)
+        defer { part = .background }
+        let hi = vals.reduce(-Double.greatestFiniteMagnitude) { $0.rustMax($1) }
+        let lo = vals.reduce(Double.greatestFiniteMagnitude) { $0.rustMin($1) }
+        let ink = ChartColor.rgb(0x40, 0x40, 0x40)
+        var p = ChartPath()
+        p.move(to: ChartPoint(x, toY(hi)))
+        p.line(to: ChartPoint(x, toY(lo)))
+        stroke(p, ChartStroke(ink, width: 1))
+        let open = c.series.first.flatMap { $0.values.at(i) ?? nil }
+        let close = c.series.last.flatMap { $0.values.at(i) ?? nil }
+        if c.upDownBars && c.series.count >= 4 {
+            guard let o = open, let cl = close else { return }
+            let w = band * 0.4
+            let (y0, y1) = (toY(o.rustMax(cl)), toY(o.rustMin(cl)))
+            let r = ChartRect(x - w / 2, y0, x + w / 2, y1.rustMax(y0 + 1))
+            // PowerPoint's default: white when the price rose, dark when it fell.
+            fill(.rect(r), cl >= o ? .white : ink)
+            stroke(.rect(r), ChartStroke(ink, width: 1))
+            return
+        }
+        if let cl = close, let last = c.series.last {
+            let y = toY(cl)
+            var d = ChartPath()
+            d.move(to: ChartPoint(x - band * 0.12, y))
+            d.line(to: ChartPoint(x + band * 0.12, y))
+            stroke(d, ChartStroke(seriesLine(c.series.count - 1, last), width: 2.5))
+        }
+    }
+
+    // MARK: Radar
+
+    /// The point at `frac` of the radius along spoke `i` of `n` (the first spoke points up).
+    static func spoke(_ cen: ChartPoint, _ r: Double, _ i: Int, _ n: Int, _ frac: Double) -> ChartPoint {
+        let a = -Double.pi / 2 + 2 * Double.pi * Double(i) / Double(Swift.max(n, 1))
+        return ChartPoint(cen.x + r * frac * cos(a), cen.y + r * frac * sin(a))
+    }
+
+    /// A radar chart: one spoke per category, the value axis running up the first spoke, a polygon of gridlines per
+    /// major unit, and each series a closed polygon (filled on a filled radar). A series' polygon comes with its first
+    /// point and grows out from the centre; its markers and labels come with their points. From DeckCraftNative's
+    /// DCRender/Radar.swift, a port of deckcraft crates/render/src/radar.rs (MIT OR Apache-2.0).
+    mutating func drawRadar(_ area: ChartRect, _ base: Double, _ textCol: ChartColor) {
+        let n = Swift.min(c.pointCount, 1000)
+        // Fewer than three spokes make no polygon; PowerPoint draws a line, this draws nothing.
+        if n < 3 { return }
+        let gridCol = ChartColor.rgb(0xD9, 0xD9, 0xD9)
+        // Room for the category labels around the outside.
+        let r = (area.width.rustMin(area.height) / 2 - base * 1.9).rustMax(base)
+        let cen = area.center
+        let (min, max, step) = c.axisScale(secondary: false, 5) ?? (0, 1, 0.2)
+        let span = Self.positiveSpan(max - min)
+        let ticks = step > 0 ? Swift.min(Swift.max(Int64(rustCast: ((max - min) / step).rounded()), 1), 20) : 1
+        if c.gridlines {
+            for k in 1 ... ticks {
+                let frac = Double(k) / Double(ticks)
+                var p = ChartPath()
+                for i in 0 ..< n {
+                    let q = Self.spoke(cen, r, i, n, frac)
+                    if i == 0 { p.move(to: q) } else { p.line(to: q) }
+                }
+                p.close()
+                stroke(p, ChartStroke(gridCol, width: 0.75))
+            }
+        }
+        for i in 0 ..< n {
+            var p = ChartPath()
+            p.move(to: cen)
+            p.line(to: Self.spoke(cen, r, i, n, 1))
+            stroke(p, ChartStroke(gridCol, width: 0.75))
+            if let name = c.categories.at(i) {
+                let q = Self.spoke(cen, r + base * 1.3, i, n, 1)
+                let w = Double(name.unicodeScalars.count) * base * 0.55 + base
+                let align: ChartText.Align = Swift.abs(q.x - cen.x) < base ? .center : q.x > cen.x ? .left : .right
+                let x0 = switch align {
+                case .left: q.x - base * 0.3
+                case .right: q.x - w + base * 0.3
+                default: q.x - w / 2
+                }
+                label(name, ChartRect(x0, q.y - base * 0.7, x0 + w, q.y + base * 0.7), base, align, .middle, textCol, false)
+            }
+        }
+        // Value labels up the first spoke.
+        if !c.valueAxis.hidden {
+            for k in 0 ... ticks {
+                let v = min + step * Double(k)
+                let q = Self.spoke(cen, r, 0, n, Double(k) / Double(ticks))
+                let t = c.axisLabel(v)
+                let w = Double(t.unicodeScalars.count) * base * 0.55 + base * 0.4
+                label(t, ChartRect(q.x - w - base * 0.3, q.y - base * 0.6, q.x - base * 0.3, q.y + base * 0.6), base * 0.9, .right, .middle, textCol, false)
+            }
+        }
+        let filled = c.kind == .filledRadar
+        for (si, s) in c.series.enumerated() {
+            let pts = (0 ..< n).map { i -> ChartPoint in
+                let v = (s.values.at(i) ?? nil) ?? min
+                return Self.spoke(cen, r, i, n, ((v - min) / span).clamped(0, 1.2))
+            }
+            var p = ChartPath()
+            for (i, q) in pts.enumerated() {
+                if i == 0 { p.move(to: q) } else { p.line(to: q) }
+            }
+            p.close()
+            part = .point(series: si, category: 0)
+            role = .radial(center: cen)
+            if filled {
+                fill(p, seriesFill(si, s), 0.75)
+            } else {
+                let lw = (s.line?.width.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 2.25).clamped(0.25, 20)
+                stroke(p, ChartStroke(seriesLine(si, s), width: lw, join: .round))
+            }
+            role = .none
+            if !filled && s.marker {
+                role = .marker
+                for (i, q) in pts.enumerated() {
+                    part = .point(series: si, category: i)
+                    fill(.circle(q, 3.5), seriesLine(si, s))
+                }
+                role = .none
+            }
+            if c.showsDataLabels(s) {
+                for (i, q) in pts.enumerated() {
+                    guard let v = s.values.at(i) ?? nil else { continue }
+                    part = .point(series: si, category: i)
+                    label(c.labelText(s, i, v), ChartRect(q.x - 40, q.y - base * 1.4, q.x + 40, q.y - base * 0.2), base * 0.9, .center, .bottom, textCol, false)
                 }
             }
         }
@@ -1064,7 +1208,7 @@ extension ChartSpec {
     public var takesDataTable: Bool {
         guard !threeD, !series.isEmpty else { return false }
         return series.allSatisfy { s in
-            [.column, .stackedColumn, .percentColumn, .line, .lineMarkers, .stackedLine, .percentLine, .area, .stackedArea, .percentArea]
+            [.column, .stackedColumn, .percentColumn, .line, .lineMarkers, .stackedLine, .percentLine, .area, .stackedArea, .percentArea, .stock]
                 .contains(seriesKind(s))
         }
     }
